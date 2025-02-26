@@ -187,15 +187,26 @@ photoElement.addEventListener('click', (event) => {
     // Get click position relative to the photo element
     const rect = photoElement.getBoundingClientRect();
     const x = event.clientX - rect.left;
-    const halfWidth = rect.width / 2;
+    const thirdWidth = rect.width / 3;
 
-    // Left half = dislike, right half = like
-    if (x < halfWidth) {
+    if (x < thirdWidth) {
+        // Left third = dislike
         showFloatingEmoji('dislike');
         dislikeButton.click();
-    } else {
+    } else if (x > thirdWidth * 2) {
+        // Right third = like
         showFloatingEmoji('like');
         likeButton.click();
+    } else {
+        // Center third = show instructions
+        const instructions = document.querySelector('.instructions');
+        if (instructions) {
+            instructions.classList.remove('hidden');
+            // Hide again after 4 seconds
+            setTimeout(() => {
+                instructions.classList.add('hidden');
+            }, 4000);
+        }
     }
 });
 
