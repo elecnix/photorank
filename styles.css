@@ -1,20 +1,30 @@
-body {
+html, body {
     margin: 0;
     padding: 0;
-    height: 100vh;
-    width: 100vw;
+    height: 100%;
+    width: 100%;
     overflow: hidden;
     background-color: #000;
+    touch-action: none;
+    position: fixed;
+    overscroll-behavior: none;
+}
+
+body {
     font-family: Arial, sans-serif;
     display: flex;
     flex-direction: column;
+    min-height: 100vh;
 }
 
 .container {
     display: flex;
     flex-direction: column;
-    height: 100vh;
-    width: 100vw;
+    flex: 1;
+    width: 100%;
+    height: 100%;
+    position: relative;
+    z-index: 1;
 }
 
 h1 {

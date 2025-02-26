@@ -191,12 +191,15 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
-// Add click handling for the photo
-photoElement.addEventListener('click', (event) => {
-    // Get click position relative to the photo element
-    const rect = photoElement.getBoundingClientRect();
-    const x = event.clientX - rect.left;
-    const thirdWidth = rect.width / 3;
+// Add click handling for the entire viewport
+document.addEventListener('click', (event) => {
+    // Ignore clicks on buttons
+    if (event.target.closest('.buttons')) {
+        return;
+    }
+    
+    const thirdWidth = window.innerWidth / 3;
+    const x = event.clientX;
 
     if (x < thirdWidth) {
         // Left third = dislike
