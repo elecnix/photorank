@@ -93,9 +93,21 @@ function showFloatingEmoji(action, clickX) {
     });
 }
 
+// Try to request fullscreen on mobile
+function requestFullscreen() {
+    if (document.documentElement.requestFullscreen) {
+        document.documentElement.requestFullscreen();
+    } else if (document.documentElement.webkitRequestFullscreen) {
+        document.documentElement.webkitRequestFullscreen();
+    }
+}
+
 function handlePhotoAction(action) {
     if (!currentPhoto || isProcessing) return;
     isProcessing = true;
+    
+    // Request fullscreen on first interaction
+    requestFullscreen();
     
     // Save the current photo info for the background request
     const photoToAction = currentPhoto;
