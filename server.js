@@ -66,68 +66,46 @@ function getRandomPhoto(callback) {
     fs.readdir(unsortedDir, (err, unsortedFiles) => {
         if (err) return callback(err);
         
-        // Get all sorted photos
+        // Filter for image files
+        const unsortedImages = unsortedFiles.filter(file => /\.(jpg|jpeg|png|gif)$/i.test(file));
+        
+        // If there are unsorted photos, always return one of those
+        if (unsortedImages.length > 0) {
+            const randomFile = unsortedImages[Math.floor(Math.random() * unsortedImages.length)];
+            callback(null, randomFile, 'unsorted');
+            return;
+        }
+        
+        // If no unsorted photos, get all sorted photos for re-ranking
+        console.log('No unsorted photos, getting sorted photos for re-ranking...');
         const sortedDirPaths = Object.values(sortedDirs);
         let allSortedFiles = [];
         let processedDirs = 0;
         
-        // If there are no unsorted files, check sorted directories
-        if (unsortedFiles.length === 0) {
-            sortedDirPaths.forEach(dirPath => {
-                fs.readdir(dirPath, (err, files) => {
-                    processedDirs++;
-                    
-                    if (!err && files.length > 0) {
-                        allSortedFiles = allSortedFiles.concat(
-                            files.map(file => ({ file, dir: dirPath }))
-                        );
+        sortedDirPaths.forEach(dirPath => {
+            fs.readdir(dirPath, (err, files) => {
+                processedDirs++;
+                
+                if (!err && files.length > 0) {
+                    // Filter for image files
+                    const imageFiles = files.filter(file => /\.(jpg|jpeg|png|gif)$/i.test(file));
+                    allSortedFiles = allSortedFiles.concat(
+                        imageFiles.map(file => ({ file, dir: dirPath }))
+                    );
+                }
+                
+                // When all directories have been processed
+                if (processedDirs === sortedDirPaths.length) {
+                    if (allSortedFiles.length === 0) {
+                        return callback(new Error('No photos found'));
                     }
                     
-                    // When all directories have been processed
-                    if (processedDirs === sortedDirPaths.length) {
-                        if (allSortedFiles.length === 0) {
-                            return callback(new Error('No photos found'));
-                        }
-                        
-                        // Select a random sorted file
-                        const randomItem = allSortedFiles[Math.floor(Math.random() * allSortedFiles.length)];
-                        callback(null, randomItem.file, path.relative(baseDir, randomItem.dir));
-                    }
-                });
+                    // Select a random sorted file for re-ranking
+                    const randomItem = allSortedFiles[Math.floor(Math.random() * allSortedFiles.length)];
+                    callback(null, randomItem.file, path.relative(baseDir, randomItem.dir));
+                }
             });
-        } else {
-            // If there are unsorted files, 80% chance to pick from unsorted
-            if (Math.random() < 0.8 || allSortedFiles.length === 0) {
-                const randomFile = unsortedFiles[Math.floor(Math.random() * unsortedFiles.length)];
-                callback(null, randomFile, 'unsorted');
-            } else {
-                // 20% chance to pick from sorted
-                sortedDirPaths.forEach(dirPath => {
-                    fs.readdir(dirPath, (err, files) => {
-                        processedDirs++;
-                        
-                        if (!err && files.length > 0) {
-                            allSortedFiles = allSortedFiles.concat(
-                                files.map(file => ({ file, dir: dirPath }))
-                            );
-                        }
-                        
-                        // When all directories have been processed
-                        if (processedDirs === sortedDirPaths.length) {
-                            if (allSortedFiles.length === 0) {
-                                // If no sorted files, pick from unsorted
-                                const randomFile = unsortedFiles[Math.floor(Math.random() * unsortedFiles.length)];
-                                callback(null, randomFile, 'unsorted');
-                            } else {
-                                // Select a random sorted file
-                                const randomItem = allSortedFiles[Math.floor(Math.random() * allSortedFiles.length)];
-                                callback(null, randomItem.file, path.relative(baseDir, randomItem.dir));
-                            }
-                        }
-                    });
-                });
-            }
-        }
+        });
     });
 }
 
