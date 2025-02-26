@@ -168,17 +168,26 @@ function handlePhotoAction(action) {
     isProcessing = false;
 }
 
-likeButton.addEventListener('click', () => handlePhotoAction('like'));
-dislikeButton.addEventListener('click', () => handlePhotoAction('dislike'));
+likeButton.addEventListener('click', (event) => {
+    event.stopPropagation(); // Prevent photo click handler from firing
+    showFloatingEmoji('like');
+    handlePhotoAction('like');
+});
+
+dislikeButton.addEventListener('click', (event) => {
+    event.stopPropagation(); // Prevent photo click handler from firing
+    showFloatingEmoji('dislike');
+    handlePhotoAction('dislike');
+});
 
 // Add keyboard controls
 document.addEventListener('keydown', (event) => {
     if (event.key === 'ArrowLeft') {
         showFloatingEmoji('dislike');
-        dislikeButton.click();
+        handlePhotoAction('dislike');
     } else if (event.key === 'ArrowRight') {
         showFloatingEmoji('like');
-        likeButton.click();
+        handlePhotoAction('like');
     }
 });
 
@@ -192,11 +201,11 @@ photoElement.addEventListener('click', (event) => {
     if (x < thirdWidth) {
         // Left third = dislike
         showFloatingEmoji('dislike');
-        dislikeButton.click();
+        handlePhotoAction('dislike');
     } else if (x > thirdWidth * 2) {
         // Right third = like
         showFloatingEmoji('like');
-        likeButton.click();
+        handlePhotoAction('like');
     } else {
         // Center third = show instructions
         const instructions = document.querySelector('.instructions');
