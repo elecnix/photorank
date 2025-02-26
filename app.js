@@ -93,21 +93,53 @@ function showFloatingEmoji(action, clickX) {
     });
 }
 
-// Try to request fullscreen on mobile
-function requestFullscreen() {
-    if (document.documentElement.requestFullscreen) {
-        document.documentElement.requestFullscreen();
-    } else if (document.documentElement.webkitRequestFullscreen) {
-        document.documentElement.webkitRequestFullscreen();
+// Toggle fullscreen
+function toggleFullscreen() {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        // Enter fullscreen
+        if (document.documentElement.requestFullscreen) {
+            document.documentElement.requestFullscreen();
+        } else if (document.documentElement.webkitRequestFullscreen) {
+            document.documentElement.webkitRequestFullscreen();
+        }
+    } else {
+        // Exit fullscreen
+        if (document.exitFullscreen) {
+            document.exitFullscreen();
+        } else if (document.webkitExitFullscreen) {
+            document.webkitExitFullscreen();
+        }
     }
 }
+
+// Update fullscreen button icon
+function updateFullscreenButton() {
+    const fullscreenBtn = document.getElementById('fullscreen');
+    if (!fullscreenBtn) return;
+    
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+        fullscreenBtn.textContent = '⤡'; // Fullscreen exit icon
+    } else {
+        fullscreenBtn.textContent = '⤢'; // Fullscreen enter icon
+    }
+}
+
+// Add fullscreen button handler
+const fullscreenBtn = document.getElementById('fullscreen');
+if (fullscreenBtn) {
+    fullscreenBtn.addEventListener('click', (event) => {
+        event.stopPropagation();
+        toggleFullscreen();
+    });
+}
+
+// Listen for fullscreen changes
+document.addEventListener('fullscreenchange', updateFullscreenButton);
+document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
 
 function handlePhotoAction(action) {
     if (!currentPhoto || isProcessing) return;
     isProcessing = true;
-    
-    // Request fullscreen on first interaction
-    requestFullscreen();
     
     // Save the current photo info for the background request
     const photoToAction = currentPhoto;
