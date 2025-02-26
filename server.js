@@ -18,6 +18,17 @@ const sortedDirs = {
 app.use(express.json());
 app.use(express.static('.'));
 
+// Ensure directories exist
+function ensureDirectoryExists(dir) {
+    if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+    }
+}
+
+// Create necessary directories
+ensureDirectoryExists(unsortedDir);
+Object.values(sortedDirs).forEach(dir => ensureDirectoryExists(dir));
+
 // Function to get a random file from a directory
 function getRandomFile(directory, callback) {
     fs.readdir(directory, (err, files) => {
@@ -109,6 +120,9 @@ app.get('/random-photo', (req, res) => {
 
 app.post('/like', (req, res) => {
     const { photo, directory } = req.body;
+    if (!photo || !directory) {
+        return res.status(400).send('Missing photo or directory');
+    }
     
     // Determine the source directory
     const sourceDir = path.join(__dirname, directory);
@@ -120,26 +134,43 @@ app.post('/like', (req, res) => {
     if (directory.includes('sorted')) {
         // Extract current rank from the directory path
         const currentRank = parseInt(directory.split('/').pop());
-        
-        // Increase rank by 1, but cap at 5
-        const newRank = Math.min(currentRank + 1, 5);
-        
-        // Update target directory based on new rank
-        targetDir = sortedDirs[newRank];
+        if (!isNaN(currentRank)) {
+            // Increase rank by 1, but cap at 5
+            const newRank = Math.min(currentRank + 1, 5);
+            // Update target directory based on new rank
+            targetDir = sortedDirs[newRank];
+        }
     }
     
-    // Move the file
+    // Verify source file exists
+    if (!fs.existsSync(sourceDir)) {
+        return res.status(404).send('Source directory not found');
+    }
+    
     const oldPath = path.join(sourceDir, photo);
+    if (!fs.existsSync(oldPath)) {
+        return res.status(404).send('Photo not found');
+    }
+    
     const newPath = path.join(targetDir, photo);
     
+    // Ensure target directory exists
+    ensureDirectoryExists(path.dirname(newPath));
+    
     fs.rename(oldPath, newPath, (err) => {
-        if (err) return res.status(500).send('Error moving photo');
+        if (err) {
+            console.error('Error moving photo:', err);
+            return res.status(500).send('Error moving photo');
+        }
         res.send('Photo liked');
     });
 });
 
 app.post('/dislike', (req, res) => {
     const { photo, directory } = req.body;
+    if (!photo || !directory) {
+        return res.status(400).send('Missing photo or directory');
+    }
     
     // Determine the source directory
     const sourceDir = path.join(__dirname, directory);
@@ -151,20 +182,34 @@ app.post('/dislike', (req, res) => {
     if (directory.includes('sorted')) {
         // Extract current rank from the directory path
         const currentRank = parseInt(directory.split('/').pop());
-        
-        // Decrease rank by 1, but floor at 1
-        const newRank = Math.max(currentRank - 1, 1);
-        
-        // Update target directory based on new rank
-        targetDir = sortedDirs[newRank];
+        if (!isNaN(currentRank)) {
+            // Decrease rank by 1, but floor at 1
+            const newRank = Math.max(currentRank - 1, 1);
+            // Update target directory based on new rank
+            targetDir = sortedDirs[newRank];
+        }
     }
     
-    // Move the file
+    // Verify source file exists
+    if (!fs.existsSync(sourceDir)) {
+        return res.status(404).send('Source directory not found');
+    }
+    
     const oldPath = path.join(sourceDir, photo);
+    if (!fs.existsSync(oldPath)) {
+        return res.status(404).send('Photo not found');
+    }
+    
     const newPath = path.join(targetDir, photo);
     
+    // Ensure target directory exists
+    ensureDirectoryExists(path.dirname(newPath));
+    
     fs.rename(oldPath, newPath, (err) => {
-        if (err) return res.status(500).send('Error moving photo');
+        if (err) {
+            console.error('Error moving photo:', err);
+            return res.status(500).send('Error moving photo');
+        }
         res.send('Photo disliked');
     });
 });
