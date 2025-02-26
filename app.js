@@ -146,6 +146,21 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
+// Add click handling for the photo
+photoElement.addEventListener('click', (event) => {
+    // Get click position relative to the photo element
+    const rect = photoElement.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    const halfWidth = rect.width / 2;
+
+    // Left half = dislike, right half = like
+    if (x < halfWidth) {
+        dislikeButton.click();
+    } else {
+        likeButton.click();
+    }
+});
+
 // Hide instructions after 4 seconds
 const instructions = document.querySelector('.instructions');
 if (instructions) {
