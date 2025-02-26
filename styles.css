@@ -71,6 +71,31 @@ h1 {
     position: relative;
 }
 
+.hover-zone {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 33.33%;
+    z-index: 5;
+    transition: background-color 0.2s ease;
+}
+
+.hover-zone.left {
+    left: 0;
+}
+
+.hover-zone.right {
+    right: 0;
+}
+
+.hover-zone.left:hover {
+    background-color: rgba(255, 50, 50, 0.1);
+}
+
+.hover-zone.right:hover {
+    background-color: rgba(50, 255, 50, 0.1);
+}
+
 img {
     max-width: 100%;
     max-height: 100%;
