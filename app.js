@@ -71,6 +71,28 @@ function loadRandomPhoto() {
     }
 }
 
+function showFloatingEmoji(action, clickX) {
+    const photoRect = photoElement.getBoundingClientRect();
+    const emoji = document.createElement('div');
+    emoji.className = `floating-emoji ${action === 'like' ? 'up' : 'down'}`;
+    emoji.textContent = action === 'like' ? '👍🏼' : '👎🏼';
+    emoji.style.top = (photoRect.top + photoRect.height / 2) + 'px';
+    
+    // Position on the sides
+    if (action === 'like') {
+        emoji.style.left = (photoRect.right - 100) + 'px';
+    } else {
+        emoji.style.left = (photoRect.left + 100) + 'px';
+    }
+    
+    document.body.appendChild(emoji);
+    
+    // Remove the element after animation
+    emoji.addEventListener('animationend', () => {
+        document.body.removeChild(emoji);
+    });
+}
+
 function handlePhotoAction(action) {
     if (!currentPhoto || isProcessing) return;
     isProcessing = true;
@@ -140,8 +162,10 @@ dislikeButton.addEventListener('click', () => handlePhotoAction('dislike'));
 // Add keyboard controls
 document.addEventListener('keydown', (event) => {
     if (event.key === 'ArrowLeft') {
+        showFloatingEmoji('dislike');
         dislikeButton.click();
     } else if (event.key === 'ArrowRight') {
+        showFloatingEmoji('like');
         likeButton.click();
     }
 });
@@ -155,8 +179,10 @@ photoElement.addEventListener('click', (event) => {
 
     // Left half = dislike, right half = like
     if (x < halfWidth) {
+        showFloatingEmoji('dislike');
         dislikeButton.click();
     } else {
+        showFloatingEmoji('like');
         likeButton.click();
     }
 });

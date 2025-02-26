@@ -98,6 +98,44 @@ img {
     box-shadow: none;
 }
 
+@keyframes floatUp {
+    0% {
+        transform: translateY(0) scale(0.5);
+        opacity: 0.8;
+    }
+    100% {
+        transform: translateY(-100px) scale(1.2);
+        opacity: 0;
+    }
+}
+
+@keyframes floatDown {
+    0% {
+        transform: translateY(0) scale(0.5);
+        opacity: 0.8;
+    }
+    100% {
+        transform: translateY(100px) scale(1.2);
+        opacity: 0;
+    }
+}
+
+.floating-emoji {
+    position: absolute;
+    font-size: 3em;
+    pointer-events: none;
+    z-index: 100;
+    transform-origin: center;
+}
+
+.floating-emoji.up {
+    animation: floatUp 0.7s ease-out forwards;
+}
+
+.floating-emoji.down {
+    animation: floatDown 0.7s ease-out forwards;
+}
+
 @media (max-width: 600px) {
     .buttons {
         flex-direction: column;
