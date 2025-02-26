@@ -15,7 +15,9 @@ function preloadNextPhoto() {
         .then(data => {
             // Create a new image element to preload the next photo
             const img = new Image();
-            img.src = `${data.directory}/${data.photo}`;
+            const photoPath = `/photos/${data.directory}/${data.photo}`;
+            console.log('Preloading photo:', photoPath);
+            img.src = photoPath;
             nextPhoto = data.photo;
             nextDirectory = data.directory;
         })
@@ -32,7 +34,9 @@ function loadRandomPhoto() {
     if (nextPhoto && nextDirectory) {
         currentPhoto = nextPhoto;
         currentDirectory = nextDirectory;
-        photoElement.src = `${currentDirectory}/${currentPhoto}`;
+        const photoPath = `/photos/${currentDirectory}/${currentPhoto}`;
+        console.log('Loading preloaded photo:', photoPath);
+        photoElement.src = photoPath;
         nextPhoto = null;
         nextDirectory = null;
         isProcessing = false;
@@ -51,9 +55,9 @@ function loadRandomPhoto() {
             .then(data => {
                 currentPhoto = data.photo;
                 currentDirectory = data.directory;
-                // Remove the leading slash if present
-                currentDirectory = currentDirectory.replace(/^\/+/, '');
-                photoElement.src = `${currentDirectory}/${currentPhoto}`;
+                const photoPath = `/photos/${currentDirectory}/${currentPhoto}`;
+                console.log('Loading photo:', photoPath);
+                photoElement.src = photoPath;
                 isProcessing = false;
                 
                 // Start preloading the next photo
@@ -105,9 +109,9 @@ function handlePhotoAction(action) {
     .then(data => {
         currentPhoto = data.photo;
         currentDirectory = data.directory;
-        // Remove the leading slash if present
-        currentDirectory = currentDirectory.replace(/^\/+/, '');
-        photoElement.src = `${currentDirectory}/${currentPhoto}`;
+        const photoPath = `/photos/${currentDirectory}/${currentPhoto}`;
+        console.log('Loading photo:', photoPath);
+        photoElement.src = photoPath;
         photoElement.style.opacity = '1';
         isProcessing = false;
         

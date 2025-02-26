@@ -1,21 +1,37 @@
+require('dotenv').config();
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+
+// Get base directory from environment or use default
+const baseDir = process.env.PHOTO_BASE_DIR || path.join(__dirname, 'photos');
 
 // Define paths to photo directories
-const unsortedDir = path.join(__dirname, 'photos', 'unsorted');
+const unsortedDir = path.join(baseDir, 'unsorted');
+
 const sortedDirs = {
-    1: path.join(__dirname, 'photos', 'sorted', '1'),
-    2: path.join(__dirname, 'photos', 'sorted', '2'),
-    3: path.join(__dirname, 'photos', 'sorted', '3'),
-    4: path.join(__dirname, 'photos', 'sorted', '4'),
-    5: path.join(__dirname, 'photos', 'sorted', '5')
+    1: path.join(baseDir, 'sorted', '1'),
+    2: path.join(baseDir, 'sorted', '2'),
+    3: path.join(baseDir, 'sorted', '3'),
+    4: path.join(baseDir, 'sorted', '4'),
+    5: path.join(baseDir, 'sorted', '5')
 };
 
+console.log('Using photo directories:', {
+    base: baseDir,
+    unsorted: unsortedDir,
+    sorted: sortedDirs
+});
+
 app.use(express.json());
+
+// Serve photos from the base directory
+app.use('/photos', express.static(baseDir));
+
+// Serve other static files
 app.use(express.static('.'));
 
 // Ensure directories exist
@@ -35,7 +51,11 @@ function getRandomFile(directory, callback) {
         if (err) return callback(err);
         if (files.length === 0) return callback(new Error('No files found'));
         
-        const randomFile = files[Math.floor(Math.random() * files.length)];
+        // Filter for image files
+        const imageFiles = files.filter(file => /\.(jpg|jpeg|png|gif)$/i.test(file));
+        if (imageFiles.length === 0) return callback(new Error('No image files found'));
+        
+        const randomFile = imageFiles[Math.floor(Math.random() * imageFiles.length)];
         callback(null, randomFile);
     });
 }
@@ -71,7 +91,7 @@ function getRandomPhoto(callback) {
                         
                         // Select a random sorted file
                         const randomItem = allSortedFiles[Math.floor(Math.random() * allSortedFiles.length)];
-                        callback(null, randomItem.file, path.relative(__dirname, randomItem.dir));
+                        callback(null, randomItem.file, path.relative(baseDir, randomItem.dir));
                     }
                 });
             });
@@ -79,7 +99,7 @@ function getRandomPhoto(callback) {
             // If there are unsorted files, 80% chance to pick from unsorted
             if (Math.random() < 0.8 || allSortedFiles.length === 0) {
                 const randomFile = unsortedFiles[Math.floor(Math.random() * unsortedFiles.length)];
-                callback(null, randomFile, 'photos/unsorted');
+                callback(null, randomFile, 'unsorted');
             } else {
                 // 20% chance to pick from sorted
                 sortedDirPaths.forEach(dirPath => {
@@ -97,11 +117,11 @@ function getRandomPhoto(callback) {
                             if (allSortedFiles.length === 0) {
                                 // If no sorted files, pick from unsorted
                                 const randomFile = unsortedFiles[Math.floor(Math.random() * unsortedFiles.length)];
-                                callback(null, randomFile, 'photos/unsorted');
+                                callback(null, randomFile, 'unsorted');
                             } else {
                                 // Select a random sorted file
                                 const randomItem = allSortedFiles[Math.floor(Math.random() * allSortedFiles.length)];
-                                callback(null, randomItem.file, path.relative(__dirname, randomItem.dir));
+                                callback(null, randomItem.file, path.relative(baseDir, randomItem.dir));
                             }
                         }
                     });
@@ -113,8 +133,27 @@ function getRandomPhoto(callback) {
 
 app.get('/random-photo', (req, res) => {
     getRandomPhoto((err, photo, directory) => {
-        if (err) return res.status(500).send('No photos available');
-        res.json({ photo, directory });
+        if (err) {
+            console.error('Error getting random photo:', err);
+            return res.status(500).send('No photos available');
+        }
+        
+        console.log('Random photo found:', {
+            photo,
+            directory,
+            unsortedDir: path.relative(baseDir, unsortedDir),
+            baseDir
+        });
+
+        // Directory is already relative to baseDir
+        const relativePath = directory || 'unsorted';
+        
+        console.log('Sending to client:', {
+            photo,
+            directory: relativePath
+        });
+        
+        res.json({ photo, directory: relativePath });
     });
 });
 
@@ -125,7 +164,7 @@ app.post('/like', (req, res) => {
     }
     
     // Determine the source directory
-    const sourceDir = path.join(__dirname, directory);
+    const sourceDir = directory === 'unsorted' ? unsortedDir : path.join(baseDir, directory);
     
     // Determine the target directory (like = 4)
     let targetDir = sortedDirs[4];
@@ -173,7 +212,7 @@ app.post('/dislike', (req, res) => {
     }
     
     // Determine the source directory
-    const sourceDir = path.join(__dirname, directory);
+    const sourceDir = directory === 'unsorted' ? unsortedDir : path.join(baseDir, directory);
     
     // Determine the target directory (dislike = 2)
     let targetDir = sortedDirs[2];
