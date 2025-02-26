@@ -75,54 +75,63 @@ function handlePhotoAction(action) {
     if (!currentPhoto || isProcessing) return;
     isProcessing = true;
     
+    // Save the current photo info for the background request
+    const photoToAction = currentPhoto;
+    const directoryToAction = currentDirectory;
+    
+    // If we have a preloaded photo, show it immediately
+    if (nextPhoto && nextDirectory) {
+        currentPhoto = nextPhoto;
+        currentDirectory = nextDirectory;
+        const photoPath = `/photos/${currentDirectory}/${currentPhoto}`;
+        console.log('Loading preloaded photo:', photoPath);
+        photoElement.src = photoPath;
+        nextPhoto = null;
+        nextDirectory = null;
+        
+        // Start preloading the next photo
+        preloadNextPhoto();
+    } else {
+        // Otherwise load a new photo immediately
+        fetch('/random-photo')
+            .then(response => response.json())
+            .then(data => {
+                currentPhoto = data.photo;
+                currentDirectory = data.directory;
+                const photoPath = `/photos/${currentDirectory}/${currentPhoto}`;
+                console.log('Loading new photo:', photoPath);
+                photoElement.src = photoPath;
+                
+                // Start preloading the next photo
+                preloadNextPhoto();
+            })
+            .catch(error => {
+                console.error('Error loading next photo:', error);
+            });
+    }
+    
+    // Send the like/dislike action in the background
     const endpoint = action === 'like' ? '/like' : '/dislike';
-    
-    // Fade out current photo
-    photoElement.style.opacity = '0.3';
-    
     fetch(endpoint, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
         },
         body: JSON.stringify({ 
-            photo: currentPhoto,
-            directory: currentDirectory
+            photo: photoToAction,
+            directory: directoryToAction
         }),
     })
     .then(response => {
         if (!response.ok) {
             throw new Error(`Error ${action}ing photo`);
         }
-        return response.text();
-    })
-    .then(() => {
-        // After successful like/dislike, load a new photo
-        return fetch('/random-photo');
-    })
-    .then(response => {
-        if (!response.ok) {
-            throw new Error('No photos available');
-        }
-        return response.json();
-    })
-    .then(data => {
-        currentPhoto = data.photo;
-        currentDirectory = data.directory;
-        const photoPath = `/photos/${currentDirectory}/${currentPhoto}`;
-        console.log('Loading photo:', photoPath);
-        photoElement.src = photoPath;
-        photoElement.style.opacity = '1';
-        isProcessing = false;
-        
-        // Start preloading the next photo
-        preloadNextPhoto();
     })
     .catch(error => {
-        console.error('Error:', error);
-        photoElement.style.opacity = '1';
-        isProcessing = false;
+        console.error('Error with background action:', error);
     });
+    
+    isProcessing = false;
 }
 
 likeButton.addEventListener('click', () => handlePhotoAction('like'));
@@ -137,14 +146,6 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
-// Add loading indicator
-photoElement.addEventListener('load', () => {
-    photoElement.style.opacity = '1';
-});
-
-photoElement.addEventListener('loadstart', () => {
-    photoElement.style.opacity = '0.3';
-});
 
 // Initial load
 loadRandomPhoto();
