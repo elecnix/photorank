@@ -78,7 +78,7 @@ function getRandomPhoto(callback) {
         
         // If no unsorted photos, get all sorted photos for re-ranking
         console.log('No unsorted photos, getting sorted photos for re-ranking...');
-        const sortedDirPaths = Object.values(sortedDirs);
+        const sortedDirPaths = Object.values(sortedDirs).filter(dirPath => !dirPath.includes('/sorted/1'));
         let allSortedFiles = [];
         let processedDirs = 0;
         
