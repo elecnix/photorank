@@ -50,6 +50,13 @@ img {
     background-color: rgba(0, 0, 0, 0.5);
     padding: 10px;
     z-index: 10;
+    opacity: 1;
+    transition: opacity 0.5s ease;
+}
+
+.instructions.hidden {
+    opacity: 0;
+    pointer-events: none;
 }
 
 .buttons {

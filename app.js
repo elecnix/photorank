@@ -146,6 +146,13 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
+// Hide instructions after 4 seconds
+const instructions = document.querySelector('.instructions');
+if (instructions) {
+    setTimeout(() => {
+        instructions.classList.add('hidden');
+    }, 4000);
+}
 
 // Initial load
 loadRandomPhoto();
