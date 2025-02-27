@@ -62,67 +62,50 @@ function getRandomFile(directory, callback) {
 
 // Function to get a random photo from either unsorted or sorted directories
 function getRandomPhoto(callback) {
-    // First check if there are any unsorted photos
-    fs.readdir(unsortedDir, (err, unsortedFiles) => {
-        if (err) return callback(err);
+    // Recursively find all photo files in the unsorted directory and its subdirectories
+    const findPhotosRecursively = (dir) => {
+        let photos = [];
+        const files = fs.readdirSync(dir);
         
-        // Filter for image files
-        const unsortedImages = unsortedFiles.filter(file => /\.(jpg|jpeg|png|gif)$/i.test(file));
+        files.forEach(file => {
+            const fullPath = path.join(dir, file);
+            const stat = fs.statSync(fullPath);
+            
+            if (stat.isDirectory()) {
+                // Recursively search subdirectories
+                photos = photos.concat(findPhotosRecursively(fullPath));
+            } else if (/\.(jpg|jpeg|png|gif|bmp)$/i.test(file)) {
+                // Add photo files, preserving relative path from unsorted directory
+                const relativePath = path.relative(unsortedDir, fullPath);
+                photos.push(relativePath);
+            }
+        });
         
-        // If there are unsorted photos, always return one of those
-        if (unsortedImages.length > 0) {
-            const randomFile = unsortedImages[Math.floor(Math.random() * unsortedImages.length)];
-            callback(null, randomFile, 'unsorted');
-            return;
+        return photos;
+    };
+
+    try {
+        const photos = findPhotosRecursively(unsortedDir);
+        
+        if (photos.length === 0) {
+            return callback(new Error('No photos found'));
         }
         
-        // If no unsorted photos, get all sorted photos for re-ranking
-        console.log('No unsorted photos, getting sorted photos for re-ranking...');
-        const sortedDirPaths = Object.values(sortedDirs).filter(dirPath => !dirPath.includes('/sorted/1'));
-        let allSortedFiles = [];
-        let processedDirs = 0;
-        
-        sortedDirPaths.forEach(dirPath => {
-            fs.readdir(dirPath, (err, files) => {
-                processedDirs++;
-                
-                if (!err && files.length > 0) {
-                    // Filter for image files
-                    const imageFiles = files.filter(file => /\.(jpg|jpeg|png|gif)$/i.test(file));
-                    allSortedFiles = allSortedFiles.concat(
-                        imageFiles.map(file => ({ file, dir: dirPath }))
-                    );
-                }
-                
-                // When all directories have been processed
-                if (processedDirs === sortedDirPaths.length) {
-                    if (allSortedFiles.length === 0) {
-                        return callback(new Error('No photos found'));
-                    }
-                    
-                    // Select a random sorted file for re-ranking
-                    const randomItem = allSortedFiles[Math.floor(Math.random() * allSortedFiles.length)];
-                    callback(null, randomItem.file, path.relative(baseDir, randomItem.dir));
-                }
-            });
-        });
-    });
+        // Pick a random photo
+        const randomPhoto = photos[Math.floor(Math.random() * photos.length)];
+        callback(null, randomPhoto, 'unsorted');
+    } catch (err) {
+        callback(err);
+    }
 }
 
 app.get('/random-photo', (req, res) => {
     getRandomPhoto((err, photo, directory) => {
         if (err) {
             console.error('Error getting random photo:', err);
-            return res.status(500).send('No photos available');
+            return res.status(500).send('Error getting random photo');
         }
         
-        console.log('Random photo found:', {
-            photo,
-            directory,
-            unsortedDir: path.relative(baseDir, unsortedDir),
-            baseDir
-        });
-
         // Directory is already relative to baseDir
         const relativePath = directory || 'unsorted';
         
@@ -207,24 +190,21 @@ app.post('/dislike', (req, res) => {
     }
     
     // Verify source file exists
-    if (!fs.existsSync(sourceDir)) {
-        return res.status(404).send('Source directory not found');
-    }
-    
     const oldPath = path.join(sourceDir, photo);
     if (!fs.existsSync(oldPath)) {
         return res.status(404).send('Photo not found');
     }
     
+    // Create new path, preserving subdirectory structure
     const newPath = path.join(targetDir, photo);
     
-    // Ensure target directory exists
+    // Ensure target directory exists (including any subdirectories)
     ensureDirectoryExists(path.dirname(newPath));
     
     console.log('Moving photo:', {
         oldPath,
         newPath
-    })
+    });
 
     fs.rename(oldPath, newPath, (err) => {
         if (err) {
