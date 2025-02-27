@@ -126,11 +126,6 @@ app.get('/random-photo', (req, res) => {
         // Directory is already relative to baseDir
         const relativePath = directory || 'unsorted';
         
-        console.log('Sending to client:', {
-            photo,
-            directory: relativePath
-        });
-        
         res.json({ photo, directory: relativePath });
     });
 });
@@ -173,6 +168,10 @@ app.post('/like', (req, res) => {
     
     // Ensure target directory exists
     ensureDirectoryExists(path.dirname(newPath));
+    console.log('Moving photo:', {
+        oldPath,
+        newPath
+    })
     
     fs.rename(oldPath, newPath, (err) => {
         if (err) {
@@ -222,6 +221,11 @@ app.post('/dislike', (req, res) => {
     // Ensure target directory exists
     ensureDirectoryExists(path.dirname(newPath));
     
+    console.log('Moving photo:', {
+        oldPath,
+        newPath
+    })
+
     fs.rename(oldPath, newPath, (err) => {
         if (err) {
             console.error('Error moving photo:', err);
