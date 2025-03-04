@@ -4,14 +4,13 @@ const fs = require('fs');
 const path = require('path');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3001;
 
 // Get base directory from environment or use default
 const baseDir = process.env.PHOTO_BASE_DIR || path.join(__dirname, 'photos');
 
 // Define paths to photo directories
-const unsortedDir = path.join(baseDir, 'unsorted');
-
+// Now the base directory itself can contain photos to be sorted
 const sortedDirs = {
     1: path.join(baseDir, 'sorted', '1'),
     2: path.join(baseDir, 'sorted', '2'),
@@ -22,7 +21,6 @@ const sortedDirs = {
 
 console.log('Using photo directories:', {
     base: baseDir,
-    unsorted: unsortedDir,
     sorted: sortedDirs
 });
 
@@ -42,7 +40,7 @@ function ensureDirectoryExists(dir) {
 }
 
 // Create necessary directories
-ensureDirectoryExists(unsortedDir);
+ensureDirectoryExists(baseDir);
 Object.values(sortedDirs).forEach(dir => ensureDirectoryExists(dir));
 
 // Function to get a random file from a directory
@@ -60,40 +58,68 @@ function getRandomFile(directory, callback) {
     });
 }
 
-// Function to get a random photo from either unsorted or sorted directories
+// Function to get a random photo from either base directory or sorted directories
 function getRandomPhoto(callback) {
-    // Recursively find all photo files in the unsorted directory and its subdirectories
-    const findPhotosRecursively = (dir) => {
+    // Recursively find all photo files in a directory and its subdirectories
+    const findPhotosRecursively = (dir, relativeTo) => {
         let photos = [];
-        const files = fs.readdirSync(dir);
-        
-        files.forEach(file => {
-            const fullPath = path.join(dir, file);
-            const stat = fs.statSync(fullPath);
+        try {
+            const files = fs.readdirSync(dir);
             
-            if (stat.isDirectory()) {
-                // Recursively search subdirectories
-                photos = photos.concat(findPhotosRecursively(fullPath));
-            } else if (/\.(jpg|jpeg|png|gif|bmp)$/i.test(file)) {
-                // Add photo files, preserving relative path from unsorted directory
-                const relativePath = path.relative(unsortedDir, fullPath);
-                photos.push(relativePath);
-            }
-        });
+            files.forEach(file => {
+                const fullPath = path.join(dir, file);
+                try {
+                    const stat = fs.statSync(fullPath);
+                    
+                    // Skip the 'sorted' directory when scanning the base directory
+                    if (dir === baseDir && file === 'sorted') {
+                        return;
+                    }
+                    
+                    if (stat.isDirectory()) {
+                        // Recursively search subdirectories
+                        photos = photos.concat(findPhotosRecursively(fullPath, relativeTo));
+                    } else if (/\.(jpg|jpeg|png|gif|bmp)$/i.test(file)) {
+                        // Add photo files, preserving relative path from the relative directory
+                        const relativePath = path.relative(relativeTo, fullPath);
+                        photos.push(relativePath);
+                    }
+                } catch (err) {
+                    console.error(`Error accessing ${fullPath}:`, err);
+                }
+            });
+        } catch (err) {
+            console.error(`Error reading directory ${dir}:`, err);
+        }
         
         return photos;
     };
 
     try {
-        const photos = findPhotosRecursively(unsortedDir);
+        // First try to get photos from the base directory
+        const basePhotos = findPhotosRecursively(baseDir, baseDir);
         
-        if (photos.length === 0) {
-            return callback(new Error('No photos found'));
+        if (basePhotos.length > 0) {
+            // Pick a random photo from the base directory
+            const randomPhoto = basePhotos[Math.floor(Math.random() * basePhotos.length)];
+            return callback(null, randomPhoto, '');
         }
         
-        // Pick a random photo
-        const randomPhoto = photos[Math.floor(Math.random() * photos.length)];
-        callback(null, randomPhoto, 'unsorted');
+        // If no photos in base directory, check sorted directories
+        const sortedDirKeys = Object.keys(sortedDirs);
+        for (const key of sortedDirKeys) {
+            const sortedDir = sortedDirs[key];
+            const sortedPhotos = findPhotosRecursively(sortedDir, sortedDir);
+            
+            if (sortedPhotos.length > 0) {
+                // Pick a random photo from this sorted directory
+                const randomPhoto = sortedPhotos[Math.floor(Math.random() * sortedPhotos.length)];
+                return callback(null, randomPhoto, `sorted/${key}`);
+            }
+        }
+        
+        // If we get here, no photos were found anywhere
+        return callback(new Error('No photos found in any directory'));
     } catch (err) {
         callback(err);
     }
@@ -107,20 +133,27 @@ app.get('/random-photo', (req, res) => {
         }
         
         // Directory is already relative to baseDir
-        const relativePath = directory || 'unsorted';
+        // If directory is empty, it means the photo is in the base directory
         
-        res.json({ photo, directory: relativePath });
+        res.json({ photo, directory });
     });
 });
 
 app.post('/like', (req, res) => {
     const { photo, directory } = req.body;
-    if (!photo || !directory) {
-        return res.status(400).send('Missing photo or directory');
+    if (!photo) {
+        return res.status(400).send('Missing photo');
     }
     
     // Determine the source directory
-    const sourceDir = directory === 'unsorted' ? unsortedDir : path.join(baseDir, directory);
+    let sourceDir;
+    if (!directory || directory === '') {
+        sourceDir = baseDir;
+    } else if (directory.includes('sorted')) {
+        sourceDir = path.join(baseDir, directory);
+    } else {
+        return res.status(400).send('Invalid directory');
+    }
     
     // Determine the target directory (like = 4)
     let targetDir = sortedDirs[4];
@@ -167,12 +200,19 @@ app.post('/like', (req, res) => {
 
 app.post('/dislike', (req, res) => {
     const { photo, directory } = req.body;
-    if (!photo || !directory) {
-        return res.status(400).send('Missing photo or directory');
+    if (!photo) {
+        return res.status(400).send('Missing photo');
     }
     
     // Determine the source directory
-    const sourceDir = directory === 'unsorted' ? unsortedDir : path.join(baseDir, directory);
+    let sourceDir;
+    if (!directory || directory === '') {
+        sourceDir = baseDir;
+    } else if (directory.includes('sorted')) {
+        sourceDir = path.join(baseDir, directory);
+    } else {
+        return res.status(400).send('Invalid directory');
+    }
     
     // Determine the target directory (dislike = 2)
     let targetDir = sortedDirs[2];

@@ -15,7 +15,8 @@ function preloadNextPhoto() {
         .then(data => {
             // Create a new image element to preload the next photo
             const img = new Image();
-            const photoPath = `/photos/${data.directory}/${data.photo}`;
+            // Handle case where directory is empty (base directory)
+            const photoPath = data.directory ? `/photos/${data.directory}/${data.photo}` : `/photos/${data.photo}`;
             console.log('Preloading photo:', photoPath);
             img.src = photoPath;
             nextPhoto = data.photo;
@@ -34,7 +35,8 @@ function loadRandomPhoto() {
     if (nextPhoto && nextDirectory) {
         currentPhoto = nextPhoto;
         currentDirectory = nextDirectory;
-        const photoPath = `/photos/${currentDirectory}/${currentPhoto}`;
+        // Handle case where directory is empty (base directory)
+        const photoPath = currentDirectory ? `/photos/${currentDirectory}/${currentPhoto}` : `/photos/${currentPhoto}`;
         console.log('Loading preloaded photo:', photoPath);
         photoElement.src = photoPath;
         nextPhoto = null;
@@ -55,7 +57,8 @@ function loadRandomPhoto() {
             .then(data => {
                 currentPhoto = data.photo;
                 currentDirectory = data.directory;
-                const photoPath = `/photos/${currentDirectory}/${currentPhoto}`;
+                // Handle case where directory is empty (base directory)
+                const photoPath = currentDirectory ? `/photos/${currentDirectory}/${currentPhoto}` : `/photos/${currentPhoto}`;
                 console.log('Loading photo:', photoPath);
                 photoElement.src = photoPath;
                 isProcessing = false;
@@ -149,7 +152,8 @@ function handlePhotoAction(action) {
     if (nextPhoto && nextDirectory) {
         currentPhoto = nextPhoto;
         currentDirectory = nextDirectory;
-        const photoPath = `/photos/${currentDirectory}/${currentPhoto}`;
+        // Handle case where directory is empty (base directory)
+        const photoPath = currentDirectory ? `/photos/${currentDirectory}/${currentPhoto}` : `/photos/${currentPhoto}`;
         console.log('Loading preloaded photo:', photoPath);
         photoElement.src = photoPath;
         nextPhoto = null;
@@ -164,7 +168,8 @@ function handlePhotoAction(action) {
             .then(data => {
                 currentPhoto = data.photo;
                 currentDirectory = data.directory;
-                const photoPath = `/photos/${currentDirectory}/${currentPhoto}`;
+                // Handle case where directory is empty (base directory)
+                const photoPath = currentDirectory ? `/photos/${currentDirectory}/${currentPhoto}` : `/photos/${currentPhoto}`;
                 console.log('Loading new photo:', photoPath);
                 photoElement.src = photoPath;
                 
