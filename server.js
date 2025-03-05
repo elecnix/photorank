@@ -127,23 +127,8 @@ function getFolderRanksData() {
             const folderPath = path.dirname(photoPath);
             if (folderPath === '.') return; // Skip photos directly in the sorted directory
             
-            // Create a unique key for the folder (without the rank part)
-            const folderKey = folderPath;
-            
-            // Update or create folder entry
-            if (!folderRanks.has(folderKey)) {
-                folderRanks.set(folderKey, {
-                    totalRank: rankNum,
-                    count: 1,
-                    photosByRank: { [rankNum]: 1 },
-                    unsortedCount: 0 // Initialize unsorted count
-                });
-            } else {
-                const folder = folderRanks.get(folderKey);
-                folder.totalRank += rankNum;
-                folder.count += 1;
-                folder.photosByRank[rankNum] = (folder.photosByRank[rankNum] || 0) + 1;
-            }
+            // Process the current folder and all parent folders
+            processFolder(folderPath, rankNum, folderRanks);
         });
     });
     
@@ -153,21 +138,8 @@ function getFolderRanksData() {
         const folderPath = path.dirname(photoPath);
         if (folderPath === '.') return; // Skip photos directly in the base directory
         
-        // Create a unique key for the folder
-        const folderKey = folderPath;
-        
-        // Update or create folder entry
-        if (!folderRanks.has(folderKey)) {
-            folderRanks.set(folderKey, {
-                totalRank: 0,
-                count: 0,
-                photosByRank: {},
-                unsortedCount: 1 // This is the first unsorted photo for this folder
-            });
-        } else {
-            const folder = folderRanks.get(folderKey);
-            folder.unsortedCount = (folder.unsortedCount || 0) + 1;
-        }
+        // Process the current folder and all parent folders for unsorted photos
+        processUnsortedFolder(folderPath, folderRanks);
     });
     
     // Convert map to array for sorting
@@ -178,14 +150,91 @@ function getFolderRanksData() {
             photoCount: data.count,
             unsortedCount: data.unsortedCount || 0,
             totalPhotos: data.count + (data.unsortedCount || 0),
-            photosByRank: data.photosByRank
+            photosByRank: data.photosByRank,
+            depth: folderPath.split('/').length // Add depth information
         };
     });
     
-    // Sort folders by average rank (descending)
-    sortedFolders.sort((a, b) => b.averageRank - a.averageRank);
+    // Sort folders by average rank (descending) and then by depth (ascending)
+    sortedFolders.sort((a, b) => {
+        // First sort by average rank
+        const rankDiff = b.averageRank - a.averageRank;
+        if (Math.abs(rankDiff) > 0.001) { // Use a small epsilon for floating point comparison
+            return rankDiff;
+        }
+        // If ranks are equal, sort by depth (shallower folders first)
+        return a.depth - b.depth;
+    });
     
     return sortedFolders;
+}
+
+// Helper function to process a folder and all its parent folders for ranked photos
+function processFolder(folderPath, rankNum, folderRanks) {
+    // Process the current folder
+    updateFolderRank(folderPath, rankNum, folderRanks);
+    
+    // Process all parent folders up to the root
+    let currentPath = folderPath;
+    while (currentPath.includes('/')) {
+        currentPath = path.dirname(currentPath);
+        if (currentPath === '.') break; // Stop at the root
+        updateFolderRank(currentPath, rankNum, folderRanks);
+    }
+}
+
+// Helper function to update a folder's rank information
+function updateFolderRank(folderPath, rankNum, folderRanks) {
+    // Create a unique key for the folder
+    const folderKey = folderPath;
+    
+    // Update or create folder entry
+    if (!folderRanks.has(folderKey)) {
+        folderRanks.set(folderKey, {
+            totalRank: rankNum,
+            count: 1,
+            photosByRank: { [rankNum]: 1 },
+            unsortedCount: 0 // Initialize unsorted count
+        });
+    } else {
+        const folder = folderRanks.get(folderKey);
+        folder.totalRank += rankNum;
+        folder.count += 1;
+        folder.photosByRank[rankNum] = (folder.photosByRank[rankNum] || 0) + 1;
+    }
+}
+
+// Helper function to process a folder and all its parent folders for unsorted photos
+function processUnsortedFolder(folderPath, folderRanks) {
+    // Process the current folder
+    updateFolderUnsorted(folderPath, folderRanks);
+    
+    // Process all parent folders up to the root
+    let currentPath = folderPath;
+    while (currentPath.includes('/')) {
+        currentPath = path.dirname(currentPath);
+        if (currentPath === '.') break; // Stop at the root
+        updateFolderUnsorted(currentPath, folderRanks);
+    }
+}
+
+// Helper function to update a folder's unsorted count
+function updateFolderUnsorted(folderPath, folderRanks) {
+    // Create a unique key for the folder
+    const folderKey = folderPath;
+    
+    // Update or create folder entry
+    if (!folderRanks.has(folderKey)) {
+        folderRanks.set(folderKey, {
+            totalRank: 0,
+            count: 0,
+            photosByRank: {},
+            unsortedCount: 1 // This is the first unsorted photo for this folder
+        });
+    } else {
+        const folder = folderRanks.get(folderKey);
+        folder.unsortedCount = (folder.unsortedCount || 0) + 1;
+    }
 }
 
 // Function to write folder rankings to a CSV file
@@ -195,11 +244,12 @@ function writeFolderRankingsToCSV(sortedFolders) {
     const csvFilePath = path.join(baseDir, 'folder_rankings.csv');
     
     // Create CSV header
-    let csvContent = 'Folder,AverageRank,SortedPhotos,UnsortedPhotos,TotalPhotos,Rank5,Rank4,Rank3,Rank2,Rank1\n';
+    let csvContent = 'Folder,Depth,AverageRank,SortedPhotos,UnsortedPhotos,TotalPhotos,Rank5,Rank4,Rank3,Rank2,Rank1\n';
     
     // Add data for each folder
     sortedFolders.forEach(folder => {
         const folderPath = folder.folderPath.replace(/,/g, '_'); // Replace commas to avoid CSV issues
+        const depth = folder.depth || folderPath.split('/').length;
         const averageRank = folder.averageRank.toFixed(2);
         const sortedPhotos = folder.photoCount;
         const unsortedPhotos = folder.unsortedCount;
@@ -213,7 +263,7 @@ function writeFolderRankingsToCSV(sortedFolders) {
         const rank1 = folder.photosByRank[1] || 0;
         
         // Add row to CSV
-        csvContent += `${folderPath},${averageRank},${sortedPhotos},${unsortedPhotos},${totalPhotos},${rank5},${rank4},${rank3},${rank2},${rank1}\n`;
+        csvContent += `${folderPath},${depth},${averageRank},${sortedPhotos},${unsortedPhotos},${totalPhotos},${rank5},${rank4},${rank3},${rank2},${rank1}\n`;
     });
     
     // Write to file
@@ -243,7 +293,9 @@ function calculateAndPrintFolderRanks() {
         console.log('No folders with photos found.');
     } else {
         sortedFolders.forEach(folder => {
+            const depth = folder.depth || folder.folderPath.split('/').length;
             console.log(`Folder: ${folder.folderPath}`);
+            console.log(`  Depth: ${depth}`);
             console.log(`  Average Rank: ${folder.averageRank.toFixed(2)}`);
             console.log(`  Sorted Photos: ${folder.photoCount}`);
             console.log(`  Unsorted Photos: ${folder.unsortedCount}`);
@@ -598,11 +650,12 @@ app.get('/download-folder-rankings', (req, res) => {
     const sortedFolders = getFolderRanksData();
     
     // Create CSV content
-    let csvContent = 'Folder,AverageRank,SortedPhotos,UnsortedPhotos,TotalPhotos,Rank5,Rank4,Rank3,Rank2,Rank1\n';
+    let csvContent = 'Folder,Depth,AverageRank,SortedPhotos,UnsortedPhotos,TotalPhotos,Rank5,Rank4,Rank3,Rank2,Rank1\n';
     
     // Add data for each folder
     sortedFolders.forEach(folder => {
         const folderPath = folder.folderPath.replace(/,/g, '_'); // Replace commas to avoid CSV issues
+        const depth = folder.depth || folderPath.split('/').length;
         const averageRank = folder.averageRank.toFixed(2);
         const sortedPhotos = folder.photoCount;
         const unsortedPhotos = folder.unsortedCount;
@@ -616,7 +669,7 @@ app.get('/download-folder-rankings', (req, res) => {
         const rank1 = folder.photosByRank[1] || 0;
         
         // Add row to CSV
-        csvContent += `${folderPath},${averageRank},${sortedPhotos},${unsortedPhotos},${totalPhotos},${rank5},${rank4},${rank3},${rank2},${rank1}\n`;
+        csvContent += `${folderPath},${depth},${averageRank},${sortedPhotos},${unsortedPhotos},${totalPhotos},${rank5},${rank4},${rank3},${rank2},${rank1}\n`;
     });
     
     // Set headers for CSV download
