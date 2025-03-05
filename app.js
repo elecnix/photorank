@@ -1,4 +1,5 @@
 const photoElement = document.getElementById('photo');
+const photoWrapper = document.getElementById('photo-wrapper');
 const dislikeButton = document.getElementById('dislike');
 const likeButton = document.getElementById('like');
 
@@ -9,6 +10,21 @@ let isProcessing = false;
 // Preloaded photo cache
 let preloadedPhotos = [];
 const MAX_PRELOADED = 3; // Keep up to 3 photos preloaded
+
+// Pinch zoom variables
+let currentScale = 1;
+let initialScale = 1;
+let lastTouchDistance = 0;
+let isPinching = false;
+let startX = 0;
+let startY = 0;
+let lastX = 0;
+let lastY = 0;
+let translateX = 0;
+let translateY = 0;
+let isZoomed = false;
+let doubleTapTimer = null;
+let lastTap = 0;
 
 // Preload the next photo
 function preloadNextPhoto() {
@@ -310,8 +326,238 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
-// Add click handling for the entire viewport
+
+
+// Hide instructions after 4 seconds
+const instructions = document.querySelector('.instructions');
+if (instructions) {
+    setTimeout(() => {
+        instructions.classList.add('hidden');
+    }, 4000);
+}
+
+// Setup pinch-zoom functionality
+function setupPinchZoom() {
+    // Reset zoom when a new photo is loaded
+    photoElement.addEventListener('load', resetZoom);
+    
+    // Handle touch events for pinch-zoom
+    photoWrapper.addEventListener('touchstart', handleTouchStart, { passive: false });
+    photoWrapper.addEventListener('touchmove', handleTouchMove, { passive: false });
+    photoWrapper.addEventListener('touchend', handleTouchEnd, { passive: false });
+    
+    // Double-tap to zoom
+    photoWrapper.addEventListener('click', handleDoubleTap);
+    
+    // Reset zoom when window is resized
+    window.addEventListener('resize', resetZoom);
+}
+
+function resetZoom() {
+    currentScale = 1;
+    translateX = 0;
+    translateY = 0;
+    isZoomed = false;
+    updatePhotoTransform();
+}
+
+function handleDoubleTap(e) {
+    const now = Date.now();
+    const timeDiff = now - lastTap;
+    
+    if (timeDiff < 300 && timeDiff > 0) {
+        // Double tap detected
+        e.preventDefault();
+        
+        if (isZoomed) {
+            resetZoom();
+        } else {
+            // Zoom in to 2.5x at the tap position
+            currentScale = 2.5;
+            isZoomed = true;
+            
+            // Calculate tap position relative to image
+            const rect = photoElement.getBoundingClientRect();
+            const tapX = e.clientX - rect.left;
+            const tapY = e.clientY - rect.top;
+            
+            // Calculate relative position (0-1) within the image
+            const relativeX = tapX / rect.width;
+            const relativeY = tapY / rect.height;
+            
+            // Center the zoom on the tap position
+            // This formula ensures the tapped point stays in the same position after zooming
+            translateX = (0.5 - relativeX) * rect.width / currentScale;
+            translateY = (0.5 - relativeY) * rect.height / currentScale;
+            
+            // Apply constraints to keep image within view
+            applyConstraints();
+            
+            updatePhotoTransform();
+        }
+    }
+    
+    lastTap = now;
+}
+
+function handleTouchStart(e) {
+    if (e.touches.length === 2) {
+        // Two finger touch - pinch zoom
+        e.preventDefault();
+        isPinching = true;
+        
+        // Calculate initial distance between the two touch points
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        lastTouchDistance = Math.hypot(
+            touch2.clientX - touch1.clientX,
+            touch2.clientY - touch1.clientY
+        );
+        
+        initialScale = currentScale;
+    } else if (e.touches.length === 1 && isZoomed) {
+        // One finger touch while zoomed - panning
+        e.preventDefault();
+        const touch = e.touches[0];
+        startX = touch.clientX - translateX;
+        startY = touch.clientY - translateY;
+        lastX = touch.clientX;
+        lastY = touch.clientY;
+    }
+}
+
+function handleTouchMove(e) {
+    if (isPinching && e.touches.length === 2) {
+        // Handle pinch zoom
+        e.preventDefault();
+        
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        
+        // Calculate new distance
+        const currentTouchDistance = Math.hypot(
+            touch2.clientX - touch1.clientX,
+            touch2.clientY - touch1.clientY
+        );
+        
+        // Calculate scale change
+        const scaleChange = currentTouchDistance / lastTouchDistance;
+        
+        // Get the current image dimensions
+        const rect = photoElement.getBoundingClientRect();
+        const containerRect = photoWrapper.getBoundingClientRect();
+        
+        // Calculate pinch center point
+        const centerX = (touch1.clientX + touch2.clientX) / 2;
+        const centerY = (touch1.clientY + touch2.clientY) / 2;
+        
+        // Calculate relative position of pinch center on the image
+        const pinchCenterXRelative = (centerX - rect.left) / rect.width;
+        const pinchCenterYRelative = (centerY - rect.top) / rect.height;
+        
+        // Store old scale to calculate relative change
+        const oldScale = currentScale;
+        
+        // Update scale with constraints
+        currentScale = Math.min(Math.max(initialScale * scaleChange, 1), 5);
+        
+        // Update isZoomed state
+        isZoomed = currentScale > 1.05;
+        
+        if (isZoomed) {
+            // Calculate how much the scale has changed in this move
+            const relativeScaleChange = currentScale / oldScale;
+            
+            // Adjust translation to keep the pinch center fixed
+            // This formula ensures the point under the pinch center stays fixed
+            translateX = (translateX - (pinchCenterXRelative - 0.5) * rect.width / oldScale) * relativeScaleChange + 
+                        (pinchCenterXRelative - 0.5) * rect.width / currentScale;
+            translateY = (translateY - (pinchCenterYRelative - 0.5) * rect.height / oldScale) * relativeScaleChange + 
+                        (pinchCenterYRelative - 0.5) * rect.height / currentScale;
+            
+            // Apply constraints to keep image within view
+            applyConstraints();
+        } else {
+            // Reset translation when zoomed out
+            translateX = 0;
+            translateY = 0;
+        }
+        
+        updatePhotoTransform();
+    } else if (e.touches.length === 1 && isZoomed) {
+        // Handle panning when zoomed
+        e.preventDefault();
+        
+        const touch = e.touches[0];
+        const deltaX = touch.clientX - lastX;
+        const deltaY = touch.clientY - lastY;
+        
+        // Update translation
+        translateX += deltaX / currentScale;
+        translateY += deltaY / currentScale;
+        
+        // Apply constraints to keep image within view
+        applyConstraints();
+        
+        lastX = touch.clientX;
+        lastY = touch.clientY;
+        
+        updatePhotoTransform();
+    }
+}
+
+// Apply constraints to keep the image within view
+function applyConstraints() {
+    const rect = photoElement.getBoundingClientRect();
+    const containerRect = photoWrapper.getBoundingClientRect();
+    
+    // Calculate the visible area of the image at current scale
+    const scaledWidth = rect.width * currentScale;
+    const scaledHeight = rect.height * currentScale;
+    
+    // Calculate maximum translation values to keep image within view
+    // These formulas ensure at least one edge of the image is always visible
+    const maxTranslateX = Math.max(0, (scaledWidth - rect.width) / (2 * currentScale));
+    const maxTranslateY = Math.max(0, (scaledHeight - rect.height) / (2 * currentScale));
+    
+    // Apply constraints
+    translateX = Math.min(Math.max(translateX, -maxTranslateX), maxTranslateX);
+    translateY = Math.min(Math.max(translateY, -maxTranslateY), maxTranslateY);
+}
+
+function handleTouchEnd(e) {
+    if (isPinching) {
+        isPinching = false;
+        
+        // If scale is close to 1, snap back to 1
+        if (currentScale < 1.05) {
+            resetZoom();
+        }
+    }
+    
+    // Prevent default click handling if we're zoomed in
+    if (isZoomed && e.touches.length === 0) {
+        e.preventDefault();
+    }
+}
+
+function updatePhotoTransform() {
+    // Apply the transform to the image element
+    photoElement.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
+    
+    // When zoomed in, make sure the photo wrapper allows scrolling
+    if (isZoomed) {
+        photoWrapper.style.overflow = 'hidden';
+    } else {
+        photoWrapper.style.overflow = 'hidden';
+    }
+}
+
+// Modify the click handler to only work when not zoomed
 document.addEventListener('click', (event) => {
+    // Skip if we're zoomed in
+    if (isZoomed) return;
+    
     // Ignore clicks on buttons
     if (event.target.closest('.buttons')) {
         return;
@@ -341,16 +587,11 @@ document.addEventListener('click', (event) => {
     }
 });
 
-// Hide instructions after 4 seconds
-const instructions = document.querySelector('.instructions');
-if (instructions) {
-    setTimeout(() => {
-        instructions.classList.add('hidden');
-    }, 4000);
-}
-
 // Initial load
 loadRandomPhoto();
+
+// Initialize pinch-zoom
+setupPinchZoom();
 
 // Ensure we always have preloaded photos ready
 setTimeout(() => {
