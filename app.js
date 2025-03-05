@@ -26,6 +26,14 @@ let isZoomed = false;
 let doubleTapTimer = null;
 let lastTap = 0;
 
+// Store pinch center coordinates
+let pinchCenterX = 0;
+let pinchCenterY = 0;
+
+// Store the initial translation before a pinch starts
+let initialTranslateX = 0;
+let initialTranslateY = 0;
+
 // Preload the next photo
 function preloadNextPhoto() {
     // Only preload if we don't have enough preloaded photos
@@ -354,11 +362,17 @@ function setupPinchZoom() {
 }
 
 function resetZoom() {
+    // Reset all zoom-related variables
     currentScale = 1;
     translateX = 0;
     translateY = 0;
+    initialTranslateX = 0;
+    initialTranslateY = 0;
     isZoomed = false;
+    isPinching = false;
     updatePhotoTransform();
+    
+    console.log('Zoom reset');
 }
 
 function handleDoubleTap(e) {
@@ -406,21 +420,38 @@ function handleTouchStart(e) {
         e.preventDefault();
         isPinching = true;
         
-        // Calculate initial distance between the two touch points
         const touch1 = e.touches[0];
         const touch2 = e.touches[1];
+        
+        // Calculate initial distance between the two touch points
         lastTouchDistance = Math.hypot(
             touch2.clientX - touch1.clientX,
             touch2.clientY - touch1.clientY
         );
         
+        // Store the center point between the two fingers
+        pinchCenterX = (touch1.clientX + touch2.clientX) / 2;
+        pinchCenterY = (touch1.clientY + touch2.clientY) / 2;
+        
+        // Store the initial scale and translation values
         initialScale = currentScale;
+        initialTranslateX = translateX;
+        initialTranslateY = translateY;
+        
+        // Get the position of the pinch center relative to the image
+        const rect = photoElement.getBoundingClientRect();
+        
+        // Log debug info
+        console.log('Pinch start:', {
+            pinchCenter: { x: pinchCenterX, y: pinchCenterY },
+            imageRect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+            initialScale,
+            initialTranslate: { x: initialTranslateX, y: initialTranslateY }
+        });
     } else if (e.touches.length === 1 && isZoomed) {
         // One finger touch while zoomed - panning
         e.preventDefault();
         const touch = e.touches[0];
-        startX = touch.clientX - translateX;
-        startY = touch.clientY - translateY;
         lastX = touch.clientX;
         lastY = touch.clientY;
     }
@@ -434,56 +465,73 @@ function handleTouchMove(e) {
         const touch1 = e.touches[0];
         const touch2 = e.touches[1];
         
-        // Calculate new distance
+        // Calculate new distance between fingers
         const currentTouchDistance = Math.hypot(
             touch2.clientX - touch1.clientX,
             touch2.clientY - touch1.clientY
         );
         
-        // Calculate scale change
-        const scaleChange = currentTouchDistance / lastTouchDistance;
+        // Get the current center point between fingers
+        const currentCenterX = (touch1.clientX + touch2.clientX) / 2;
+        const currentCenterY = (touch1.clientY + touch2.clientY) / 2;
         
-        // Get the current image dimensions
+        // Calculate how much the center point has moved
+        const centerDeltaX = currentCenterX - pinchCenterX;
+        const centerDeltaY = currentCenterY - pinchCenterY;
+        
+        // Calculate the new scale based on finger distance change
+        const newScale = Math.min(Math.max(initialScale * (currentTouchDistance / lastTouchDistance), 1), 5);
+        
+        // Get image dimensions
         const rect = photoElement.getBoundingClientRect();
-        const containerRect = photoWrapper.getBoundingClientRect();
         
-        // Calculate pinch center point
-        const centerX = (touch1.clientX + touch2.clientX) / 2;
-        const centerY = (touch1.clientY + touch2.clientY) / 2;
+        // Convert pinch center to image space coordinates (relative to image center)
+        const imageCenterX = rect.left + rect.width / 2;
+        const imageCenterY = rect.top + rect.height / 2;
         
-        // Calculate relative position of pinch center on the image
-        const pinchCenterXRelative = (centerX - rect.left) / rect.width;
-        const pinchCenterYRelative = (centerY - rect.top) / rect.height;
+        // Calculate pinch center relative to image center
+        const pinchToCenterX = pinchCenterX - imageCenterX;
+        const pinchToCenterY = pinchCenterY - imageCenterY;
         
-        // Store old scale to calculate relative change
-        const oldScale = currentScale;
+        // Calculate how the translation should change to keep the pinch center fixed
+        // This is the key formula that ensures the point under your fingers stays fixed
+        const newTranslateX = initialTranslateX + 
+                            // Account for center point movement
+                            centerDeltaX / newScale + 
+                            // Account for the scaling effect at the pinch point
+                            pinchToCenterX * (1/initialScale - 1/newScale);
+                            
+        const newTranslateY = initialTranslateY + 
+                            centerDeltaY / newScale + 
+                            pinchToCenterY * (1/initialScale - 1/newScale);
         
-        // Update scale with constraints
-        currentScale = Math.min(Math.max(initialScale * scaleChange, 1), 5);
+        // Update the current scale and translation
+        currentScale = newScale;
+        translateX = newTranslateX;
+        translateY = newTranslateY;
         
-        // Update isZoomed state
+        // Update zoom state
         isZoomed = currentScale > 1.05;
         
-        if (isZoomed) {
-            // Calculate how much the scale has changed in this move
-            const relativeScaleChange = currentScale / oldScale;
-            
-            // Adjust translation to keep the pinch center fixed
-            // This formula ensures the point under the pinch center stays fixed
-            translateX = (translateX - (pinchCenterXRelative - 0.5) * rect.width / oldScale) * relativeScaleChange + 
-                        (pinchCenterXRelative - 0.5) * rect.width / currentScale;
-            translateY = (translateY - (pinchCenterYRelative - 0.5) * rect.height / oldScale) * relativeScaleChange + 
-                        (pinchCenterYRelative - 0.5) * rect.height / currentScale;
-            
-            // Apply constraints to keep image within view
-            applyConstraints();
-        } else {
-            // Reset translation when zoomed out
+        // If not zoomed, reset translation
+        if (!isZoomed) {
             translateX = 0;
             translateY = 0;
         }
         
+        // Apply constraints to keep image within view
+        applyConstraints();
+        
+        // Update the transform
         updatePhotoTransform();
+        
+        // Debug info
+        console.log('Pinch move:', {
+            scale: currentScale,
+            translate: { x: translateX, y: translateY },
+            center: { x: currentCenterX, y: currentCenterY },
+            centerDelta: { x: centerDeltaX, y: centerDeltaY }
+        });
     } else if (e.touches.length === 1 && isZoomed) {
         // Handle panning when zoomed
         e.preventDefault();
@@ -492,7 +540,7 @@ function handleTouchMove(e) {
         const deltaX = touch.clientX - lastX;
         const deltaY = touch.clientY - lastY;
         
-        // Update translation
+        // Update translation - divide by scale to make panning feel consistent at all zoom levels
         translateX += deltaX / currentScale;
         translateY += deltaY / currentScale;
         
@@ -511,18 +559,26 @@ function applyConstraints() {
     const rect = photoElement.getBoundingClientRect();
     const containerRect = photoWrapper.getBoundingClientRect();
     
-    // Calculate the visible area of the image at current scale
-    const scaledWidth = rect.width * currentScale;
-    const scaledHeight = rect.height * currentScale;
-    
-    // Calculate maximum translation values to keep image within view
-    // These formulas ensure at least one edge of the image is always visible
-    const maxTranslateX = Math.max(0, (scaledWidth - rect.width) / (2 * currentScale));
-    const maxTranslateY = Math.max(0, (scaledHeight - rect.height) / (2 * currentScale));
-    
-    // Apply constraints
-    translateX = Math.min(Math.max(translateX, -maxTranslateX), maxTranslateX);
-    translateY = Math.min(Math.max(translateY, -maxTranslateY), maxTranslateY);
+    // For landscape images (width > height)
+    if (rect.width > rect.height) {
+        // Calculate the maximum allowed translation to keep image edges visible
+        const maxTranslateX = (rect.width * (currentScale - 1)) / (2 * currentScale);
+        const maxTranslateY = (rect.height * (currentScale - 1)) / (2 * currentScale);
+        
+        // Apply constraints
+        translateX = Math.min(Math.max(translateX, -maxTranslateX), maxTranslateX);
+        translateY = Math.min(Math.max(translateY, -maxTranslateY), maxTranslateY);
+    } 
+    // For portrait images (height > width)
+    else {
+        // Calculate the maximum allowed translation to keep image edges visible
+        const maxTranslateX = (rect.width * (currentScale - 1)) / (2 * currentScale);
+        const maxTranslateY = (rect.height * (currentScale - 1)) / (2 * currentScale);
+        
+        // Apply constraints
+        translateX = Math.min(Math.max(translateX, -maxTranslateX), maxTranslateX);
+        translateY = Math.min(Math.max(translateY, -maxTranslateY), maxTranslateY);
+    }
 }
 
 function handleTouchEnd(e) {
@@ -545,11 +601,13 @@ function updatePhotoTransform() {
     // Apply the transform to the image element
     photoElement.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
     
-    // When zoomed in, make sure the photo wrapper allows scrolling
-    if (isZoomed) {
-        photoWrapper.style.overflow = 'hidden';
-    } else {
-        photoWrapper.style.overflow = 'hidden';
+    // Always keep the photo wrapper overflow hidden to prevent scrolling
+    photoWrapper.style.overflow = 'hidden';
+    
+    // Debug info in UI
+    const debugInfo = document.getElementById('debug-info');
+    if (debugInfo) {
+        debugInfo.textContent = `Scale: ${currentScale.toFixed(2)}, Translate: (${translateX.toFixed(1)}, ${translateY.toFixed(1)})`;
     }
 }
 
