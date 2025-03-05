@@ -645,6 +645,46 @@ document.addEventListener('click', (event) => {
     }
 });
 
+// Handle refresh cache button click
+const refreshCacheBtn = document.getElementById('refresh-cache');
+if (refreshCacheBtn) {
+    refreshCacheBtn.addEventListener('click', () => {
+        refreshCacheBtn.disabled = true;
+        refreshCacheBtn.textContent = 'Refreshing...';
+        
+        // Call the refresh-cache endpoint
+        fetch('/refresh-cache')
+            .then(response => response.json())
+            .then(data => {
+                console.log('Cache refreshed:', data);
+                refreshCacheBtn.textContent = 'Refresh Rankings';
+                refreshCacheBtn.disabled = false;
+                
+                // Show a notification
+                const notification = document.createElement('div');
+                notification.className = 'notification';
+                notification.textContent = `Rankings refreshed! Found ${data.basePhotos} unsorted photos and ${data.sortedPhotos} sorted photos.`;
+                document.body.appendChild(notification);
+                
+                // Remove notification after 3 seconds
+                setTimeout(() => {
+                    notification.classList.add('fade-out');
+                    setTimeout(() => {
+                        document.body.removeChild(notification);
+                    }, 500);
+                }, 3000);
+            })
+            .catch(error => {
+                console.error('Error refreshing cache:', error);
+                refreshCacheBtn.textContent = 'Refresh Failed';
+                setTimeout(() => {
+                    refreshCacheBtn.textContent = 'Refresh Rankings';
+                    refreshCacheBtn.disabled = false;
+                }, 2000);
+            });
+    });
+}
+
 // Initial load
 loadRandomPhoto();
 
