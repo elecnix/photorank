@@ -14,7 +14,7 @@ RUN npm install
 COPY *.js *.html *.css manifest.json ./
 
 # Expose the port the app runs on
-EXPOSE 3000
+EXPOSE 3001
 
 # Create a volume for photos
 VOLUME ["/app/photos"]

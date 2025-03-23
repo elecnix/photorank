@@ -111,6 +111,22 @@ function preloadNextPhoto() {
     }
 }
 
+function displayNextPhoto() {
+    if (preloadedPhotos.length > 0) {
+        const nextPhoto = preloadedPhotos.shift();
+        currentPhoto = nextPhoto.photo;
+        currentDirectory = nextPhoto.directory;
+        photoElement.src = nextPhoto.path;
+        console.log('Displaying preloaded photo:', nextPhoto.path);
+
+        // Preload the next photo after displaying the current one
+        preloadNextPhoto();
+    } else {
+        // Fallback to loading a random photo if no preloaded photos are available
+        loadRandomPhoto();
+    }
+}
+
 function loadRandomPhoto() {
     if (isProcessing) return;
     isProcessing = true;
@@ -227,16 +243,14 @@ document.addEventListener('fullscreenchange', updateFullscreenButton);
 document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
 
 function handlePhotoAction(action) {
-    if (!currentPhoto || isProcessing) return;
-    isProcessing = true;
+    if (!currentPhoto) return;
     
     // Save the current photo info for the background request
     const photoToAction = currentPhoto;
     const directoryToAction = currentDirectory;
     
-    // Log the current state of preloaded photos before taking action
-    console.log(`Current preloaded photos before ${action}:`, 
-                preloadedPhotos.map(p => ({ path: p.path, loaded: p.loaded })));
+    // Immediately display the next photo
+    displayNextPhoto();
     
     // Send the like/dislike action in the background
     const endpoint = action === 'like' ? '/like' : '/dislike';
@@ -258,57 +272,11 @@ function handlePhotoAction(action) {
     })
     .catch(error => {
         console.error('Error with background action:', error);
+    })
+    .finally(() => {
+        // Request completed - no action needed
+        console.log(`${action} request completed for photo:`, photoToAction);
     });
-    
-        // Display next photo immediately from preloaded cache
-    if (preloadedPhotos.length > 0) {
-        // Make sure we're using a fully loaded preloaded photo
-        const preloadedPhoto = preloadedPhotos.shift();
-        
-        // Debug info
-        console.log('Using preloaded photo after ranking:', preloadedPhoto.path, 'Loaded status:', preloadedPhoto.loaded);
-        
-        // Update current photo info
-        currentPhoto = preloadedPhoto.photo;
-        currentDirectory = preloadedPhoto.directory;
-        
-        // Set the image source - use the already loaded image
-        photoElement.src = preloadedPhoto.path;
-        
-        // We can set isProcessing to false immediately
-        isProcessing = false;
-        
-        // Start preloading another photo to maintain our cache
-        setTimeout(preloadNextPhoto, 100);
-    } else {
-        // No preloaded photo available, load a new one
-        console.log('No preloaded photos available after ranking, fetching new photo...');
-        fetch('/random-photo')
-            .then(response => {
-                if (!response.ok) {
-                    throw new Error('No photos available');
-                }
-                return response.json();
-            })
-            .then(data => {
-                currentPhoto = data.photo;
-                currentDirectory = data.directory;
-                // Handle case where directory is empty (base directory)
-                const photoPath = currentDirectory ? `/photos/${currentDirectory}/${currentPhoto}` : `/photos/${currentPhoto}`;
-                console.log('Loading new photo after ranking:', photoPath);
-                photoElement.src = photoPath;
-                
-                // Set isProcessing to false
-                isProcessing = false;
-                
-                // Start preloading photos for next time
-                setTimeout(preloadNextPhoto, 100);
-            })
-            .catch(error => {
-                console.error('Error loading next photo after ranking:', error);
-                isProcessing = false;
-            });
-    }
 }
 
 likeButton.addEventListener('click', (event) => {
