@@ -362,60 +362,126 @@ function getRandomPhoto(callback) {
         return fs.existsSync(fullPath);
     }
     
+    // Helper function to select a folder based on probability distribution
+    function selectFolderByProbability() {
+        // Define probabilities for each folder (in percentage)
+        const probabilities = {
+            '1': 0,    // 0%
+            '2': 20,   // 20%
+            '3': 50,   // 50%
+            '4': 20,   // 20%
+            '5': 10    // 10%
+        };
+        
+        // Generate a random number between 0 and 100
+        const randomNum = Math.random() * 100;
+        
+        // Determine which folder to select based on the random number
+        let cumulativeProbability = 0;
+        for (const [folder, probability] of Object.entries(probabilities)) {
+            cumulativeProbability += probability;
+            if (randomNum <= cumulativeProbability) {
+                return folder;
+            }
+        }
+        
+        // Default to folder 3 if something goes wrong
+        return '3';
+    }
+    
+    // Function to try getting a photo from a specific folder
+    function tryGetPhotoFromFolder(folder, directory) {
+        if (photoCache[folder].length === 0) return null;
+        
+        // Try up to 5 random photos from this folder
+        for (let i = 0; i < 5; i++) {
+            const randomPhoto = getRandomFromArray(photoCache[folder]);
+            if (randomPhoto && verifyPhotoExists(randomPhoto, directory)) {
+                return { photo: randomPhoto, directory };
+            } else if (randomPhoto) {
+                // Remove invalid photo from cache
+                const index = photoCache[folder].indexOf(randomPhoto);
+                if (index !== -1) {
+                    photoCache[folder].splice(index, 1);
+                }
+            }
+        }
+        
+        return null;
+    }
+    
     try {
-        // First try to get photos from the base directory cache
+        // First try to get photos from the base directory cache (unsorted)
         if (photoCache.base.length > 0) {
-            // Try up to 5 random photos from the cache
-            for (let i = 0; i < 5; i++) {
+            const result = tryGetPhotoFromFolder('base', '');
+            if (result) {
+                return callback(null, result.photo, result.directory);
+            }
+        }
+        
+        // If no valid photos in base directory, use probability distribution for sorted folders
+        // Create an array to track which folders we've already tried
+        const triedFolders = new Set();
+        const availableFolders = Object.keys(photoCache.sorted).filter(key => 
+            photoCache.sorted[key].length > 0
+        );
+        
+        // If we have no available folders with photos, refresh and try again
+        if (availableFolders.length === 0) {
+            refreshPhotoCache();
+            
+            // Try base directory again after refreshing
+            if (photoCache.base.length > 0) {
+                const result = tryGetPhotoFromFolder('base', '');
+                if (result) {
+                    return callback(null, result.photo, result.directory);
+                }
+            }
+        }
+        
+        // Try to select folders based on probability until we find a photo or exhaust all options
+        while (triedFolders.size < 5 && availableFolders.length > triedFolders.size) {
+            const selectedFolder = selectFolderByProbability();
+            
+            // Skip if we've already tried this folder or it has no photos
+            if (triedFolders.has(selectedFolder) || photoCache.sorted[selectedFolder].length === 0) {
+                triedFolders.add(selectedFolder);
+                continue;
+            }
+            
+            // Try to get a photo from the selected folder
+            const randomPhoto = getRandomFromArray(photoCache.sorted[selectedFolder]);
+            if (randomPhoto && verifyPhotoExists(randomPhoto, `sorted/${selectedFolder}`)) {
+                return callback(null, randomPhoto, `sorted/${selectedFolder}`);
+            } else if (randomPhoto) {
+                // Remove invalid photo from cache
+                const index = photoCache.sorted[selectedFolder].indexOf(randomPhoto);
+                if (index !== -1) {
+                    photoCache.sorted[selectedFolder].splice(index, 1);
+                }
+            }
+            
+            triedFolders.add(selectedFolder);
+        }
+        
+        // If we've tried several photos and none exist, refresh the cache if we haven't already
+        if (availableFolders.length > 0) {
+            refreshPhotoCache();
+            
+            // Try base directory one more time
+            if (photoCache.base.length > 0) {
                 const randomPhoto = getRandomFromArray(photoCache.base);
                 if (randomPhoto && verifyPhotoExists(randomPhoto, '')) {
                     return callback(null, randomPhoto, '');
-                } else if (randomPhoto) {
-                    // Remove invalid photo from cache
-                    const index = photoCache.base.indexOf(randomPhoto);
-                    if (index !== -1) {
-                        photoCache.base.splice(index, 1);
-                    }
                 }
             }
-        }
-        
-        // If no valid photos in base directory, check sorted directories
-        const sortedDirKeys = Object.keys(photoCache.sorted);
-        for (const key of sortedDirKeys) {
-            if (photoCache.sorted[key].length > 0) {
-                // Try up to 5 random photos from this sorted directory
-                for (let i = 0; i < 5; i++) {
-                    const randomPhoto = getRandomFromArray(photoCache.sorted[key]);
-                    if (randomPhoto && verifyPhotoExists(randomPhoto, `sorted/${key}`)) {
-                        return callback(null, randomPhoto, `sorted/${key}`);
-                    } else if (randomPhoto) {
-                        // Remove invalid photo from cache
-                        const index = photoCache.sorted[key].indexOf(randomPhoto);
-                        if (index !== -1) {
-                            photoCache.sorted[key].splice(index, 1);
-                        }
-                    }
-                }
-            }
-        }
-        
-        // If we've tried several photos and none exist, refresh the cache
-        refreshPhotoCache();
-        
-        // Try one more time after refreshing
-        if (photoCache.base.length > 0) {
-            const randomPhoto = getRandomFromArray(photoCache.base);
-            if (randomPhoto && verifyPhotoExists(randomPhoto, '')) {
-                return callback(null, randomPhoto, '');
-            }
-        }
-        
-        for (const key of sortedDirKeys) {
-            if (photoCache.sorted[key].length > 0) {
-                const randomPhoto = getRandomFromArray(photoCache.sorted[key]);
-                if (randomPhoto && verifyPhotoExists(randomPhoto, `sorted/${key}`)) {
-                    return callback(null, randomPhoto, `sorted/${key}`);
+            
+            // Try one more time with probability distribution
+            const selectedFolder = selectFolderByProbability();
+            if (photoCache.sorted[selectedFolder].length > 0) {
+                const randomPhoto = getRandomFromArray(photoCache.sorted[selectedFolder]);
+                if (randomPhoto && verifyPhotoExists(randomPhoto, `sorted/${selectedFolder}`)) {
+                    return callback(null, randomPhoto, `sorted/${selectedFolder}`);
                 }
             }
         }
