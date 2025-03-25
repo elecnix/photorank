@@ -113,7 +113,7 @@ h1 {
     background-color: rgba(50, 255, 50, 0.1);
 }
 
-img {
+.photo {
     max-width: 100%;
     max-height: 100%;
     object-fit: contain;
@@ -126,6 +126,15 @@ img {
     backface-visibility: hidden;
     -webkit-transform-origin: center;
     -webkit-transition: -webkit-transform 0.05s linear;
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.photo.active {
+    opacity: 1;
+    pointer-events: auto;
+    z-index: 2;
 }
 
 .instructions {

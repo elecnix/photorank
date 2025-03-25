@@ -1,4 +1,7 @@
-const photoElement = document.getElementById('photo');
+const photoElement1 = document.getElementById('photo-1');
+const photoElement2 = document.getElementById('photo-2');
+let activePhotoElement = photoElement1;
+let inactivePhotoElement = photoElement2;
 const photoWrapper = document.getElementById('photo-wrapper');
 const dislikeButton = document.getElementById('dislike');
 const likeButton = document.getElementById('like');
@@ -66,20 +69,37 @@ function preloadNextPhoto() {
                     directory: data.directory,
                     path: photoPath,
                     img: img,
-                    loaded: false // Will be set to true when loaded
+                    loaded: false, // Will be set to true when loaded
+                    decoded: false // Will be set to true when decoded
                 };
                 
                 console.log('Starting to preload photo:', photoPath);
                 
                 // Set up load event handler before setting src
                 img.onload = () => {
-                    console.log('Preloaded photo loaded successfully:', photoPath);
-                    preloadedPhoto.loaded = true;
+                    console.log('Preloaded photo loaded, now decoding:', photoPath);
                     
-                    // If we still need more photos, keep preloading
-                    if (preloadedPhotos.length < MAX_PRELOADED) {
-                        setTimeout(preloadNextPhoto, 100);
-                    }
+                    // Use the decode() method to pre-decode the image in the background
+                    // This moves the expensive decode operation off the main thread
+                    img.decode().then(() => {
+                        console.log('Preloaded photo fully decoded:', photoPath);
+                        preloadedPhoto.loaded = true;
+                        preloadedPhoto.decoded = true;
+                        
+                        // If we still need more photos, keep preloading
+                        if (preloadedPhotos.length < MAX_PRELOADED) {
+                            setTimeout(preloadNextPhoto, 100);
+                        }
+                    }).catch(error => {
+                        console.error('Error decoding preloaded photo:', photoPath, error);
+                        // Even if decoding fails, mark as loaded so we can still use it
+                        preloadedPhoto.loaded = true;
+                        
+                        // If we still need more photos, keep preloading
+                        if (preloadedPhotos.length < MAX_PRELOADED) {
+                            setTimeout(preloadNextPhoto, 100);
+                        }
+                    });
                 };
                 
                 img.onerror = () => {
@@ -113,12 +133,47 @@ function preloadNextPhoto() {
 
 function displayNextPhoto() {
     if (preloadedPhotos.length > 0) {
-        const nextPhoto = preloadedPhotos.shift();
+        // First, check if we have any fully decoded images
+        let decodedIndex = preloadedPhotos.findIndex(photo => photo.decoded);
+        
+        // If no decoded images, use the first loaded image
+        if (decodedIndex === -1) {
+            decodedIndex = preloadedPhotos.findIndex(photo => photo.loaded);
+        }
+        
+        // If still no loaded images, just use the first one
+        if (decodedIndex === -1) {
+            decodedIndex = 0;
+        }
+        
+        // Get the best available photo
+        const nextPhoto = preloadedPhotos.splice(decodedIndex, 1)[0];
         currentPhoto = nextPhoto.photo;
         currentDirectory = nextPhoto.directory;
-        photoElement.src = nextPhoto.path;
-        console.log('Displaying preloaded photo:', nextPhoto.path);
-
+        
+        // Swap active and inactive elements
+        activePhotoElement.classList.remove('active');
+        inactivePhotoElement.classList.add('active');
+        
+        // Swap the references
+        const temp = activePhotoElement;
+        activePhotoElement = inactivePhotoElement;
+        inactivePhotoElement = temp;
+        
+        // Log the status of the photo we're displaying
+        console.log('Displaying preloaded photo:', nextPhoto.path, 
+                   'Loaded:', nextPhoto.loaded, 'Decoded:', nextPhoto.decoded);
+        
+        // If we have a decoded image, use it directly
+        if (nextPhoto.decoded && nextPhoto.img) {
+            // Clone the already decoded image to the active element
+            // This is much faster than loading from URL again
+            activePhotoElement.src = nextPhoto.img.src;
+        } else {
+            // Fallback to setting the src directly
+            activePhotoElement.src = nextPhoto.path;
+        }
+        
         // Preload the next photo after displaying the current one
         preloadNextPhoto();
     } else {
@@ -133,15 +188,48 @@ function loadRandomPhoto() {
     
     // If we have a preloaded photo, use it
     if (preloadedPhotos.length > 0) {
-        // Get the first preloaded photo
-        const preloadedPhoto = preloadedPhotos.shift();
+        // First, check if we have any fully decoded images
+        let decodedIndex = preloadedPhotos.findIndex(photo => photo.decoded);
+        
+        // If no decoded images, use the first loaded image
+        if (decodedIndex === -1) {
+            decodedIndex = preloadedPhotos.findIndex(photo => photo.loaded);
+        }
+        
+        // If still no loaded images, just use the first one
+        if (decodedIndex === -1) {
+            decodedIndex = 0;
+        }
+        
+        // Get the best available photo
+        const preloadedPhoto = preloadedPhotos.splice(decodedIndex, 1)[0];
         
         // Update current photo info
         currentPhoto = preloadedPhoto.photo;
         currentDirectory = preloadedPhoto.directory;
         
-        console.log('Loading preloaded photo:', preloadedPhoto.path, 'Loaded status:', preloadedPhoto.loaded);
-        photoElement.src = preloadedPhoto.path;
+        // Swap active and inactive elements
+        activePhotoElement.classList.remove('active');
+        inactivePhotoElement.classList.add('active');
+        
+        // Swap the references
+        const temp = activePhotoElement;
+        activePhotoElement = inactivePhotoElement;
+        inactivePhotoElement = temp;
+        
+        console.log('Loading preloaded photo:', preloadedPhoto.path, 
+                   'Loaded:', preloadedPhoto.loaded, 'Decoded:', preloadedPhoto.decoded);
+        
+        // If we have a decoded image, use it directly
+        if (preloadedPhoto.decoded && preloadedPhoto.img) {
+            // Clone the already decoded image to the active element
+            // This is much faster than loading from URL again
+            activePhotoElement.src = preloadedPhoto.img.src;
+        } else {
+            // Fallback to setting the src directly
+            activePhotoElement.src = preloadedPhoto.path;
+        }
+        
         isProcessing = false;
         
         // Start preloading the next photo to maintain our cache
@@ -162,22 +250,72 @@ function loadRandomPhoto() {
                 // Handle case where directory is empty (base directory)
                 const photoPath = currentDirectory ? `/photos/${currentDirectory}/${currentPhoto}` : `/photos/${currentPhoto}`;
                 console.log('Loading photo directly:', photoPath);
-                photoElement.src = photoPath;
-                isProcessing = false;
                 
-                // Start preloading photos for next time
-                preloadNextPhoto();
+                // Create a new image and decode it before displaying
+                const img = new Image();
+                
+                // Set up load event handler
+                img.onload = () => {
+                    console.log('Direct loaded photo, now decoding:', photoPath);
+                    
+                    // Try to decode the image before displaying it
+                    img.decode().then(() => {
+                        console.log('Direct loaded photo decoded successfully');
+                        
+                        // Now display the decoded image
+                        // Swap active and inactive elements
+                        activePhotoElement.classList.remove('active');
+                        inactivePhotoElement.classList.add('active');
+                        
+                        // Swap the references
+                        const temp = activePhotoElement;
+                        activePhotoElement = inactivePhotoElement;
+                        inactivePhotoElement = temp;
+                        
+                        // Use the already decoded image
+                        activePhotoElement.src = img.src;
+                        isProcessing = false;
+                    }).catch(error => {
+                        console.error('Error decoding direct loaded photo:', error);
+                        
+                        // Even if decoding fails, still display the image
+                        activePhotoElement.classList.remove('active');
+                        inactivePhotoElement.classList.add('active');
+                        
+                        const temp = activePhotoElement;
+                        activePhotoElement = inactivePhotoElement;
+                        inactivePhotoElement = temp;
+                        
+                        activePhotoElement.src = photoPath;
+                        isProcessing = false;
+                    });
+                    
+                    // Start preloading photos for next time
+                    preloadNextPhoto();
+                };
+                
+                img.onerror = () => {
+                    console.error('Error loading direct photo:', photoPath);
+                    activePhotoElement.alt = 'No photos available';
+                    isProcessing = false;
+                    
+                    // Try preloading anyway
+                    preloadNextPhoto();
+                };
+                
+                // Start loading the image
+                img.src = photoPath;
             })
             .catch(error => {
                 console.error('Error loading photo:', error);
-                photoElement.alt = 'No photos available';
+                activePhotoElement.alt = 'No photos available';
                 isProcessing = false;
             });
     }
 }
 
 function showFloatingEmoji(action, clickX) {
-    const photoRect = photoElement.getBoundingClientRect();
+    const photoRect = activePhotoElement.getBoundingClientRect();
     const emoji = document.createElement('div');
     emoji.className = `floating-emoji ${action === 'like' ? 'up' : 'down'}`;
     emoji.textContent = action === 'like' ? '👍🏼' : '👎🏼';
@@ -242,41 +380,62 @@ if (fullscreenBtn) {
 document.addEventListener('fullscreenchange', updateFullscreenButton);
 document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
 
-function handlePhotoAction(action) {
+// Helper function to yield to the main thread using scheduler.yield() if available,
+// or setTimeout as a fallback
+async function yieldToMain() {
+    if (typeof scheduler !== 'undefined' && typeof scheduler.yield === 'function') {
+        return scheduler.yield();
+    }
+    
+    return new Promise(resolve => {
+        setTimeout(resolve, 0);
+    });
+}
+
+async function handlePhotoAction(action) {
     if (!currentPhoto) return;
     
     // Save the current photo info for the background request
     const photoToAction = currentPhoto;
     const directoryToAction = currentDirectory;
     
-    // Immediately display the next photo
-    displayNextPhoto();
-    
-    // Send the like/dislike action in the background
+    // Send the like/dislike action for the CURRENT photo before displaying the next one
+    // This ensures we're rating the photo that's currently visible
     const endpoint = action === 'like' ? '/like' : '/dislike';
-    fetch(endpoint, {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ 
-            photo: photoToAction,
-            directory: directoryToAction
-        }),
-    })
-    .then(response => {
+    
+    try {
+        // Start the fetch request but don't await it yet
+        const fetchPromise = fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ 
+                photo: photoToAction,
+                directory: directoryToAction
+            }),
+        });
+        
+        // Now display the next photo immediately for better UI responsiveness
+        // This happens while the fetch is in progress
+        displayNextPhoto();
+        
+        // Yield to the main thread to allow UI updates to complete
+        await yieldToMain();
+        
+        // Now await the fetch result
+        const response = await fetchPromise;
+        
         if (!response.ok) {
             throw new Error(`Error ${action}ing photo`);
         }
         console.log(`Successfully ${action}d photo:`, photoToAction);
-    })
-    .catch(error => {
+    } catch (error) {
         console.error('Error with background action:', error);
-    })
-    .finally(() => {
+    } finally {
         // Request completed - no action needed
         console.log(`${action} request completed for photo:`, photoToAction);
-    });
+    }
 }
 
 likeButton.addEventListener('click', (event) => {
@@ -315,7 +474,8 @@ if (instructions) {
 // Setup pinch-zoom functionality
 function setupPinchZoom() {
     // Reset zoom when a new photo is loaded
-    photoElement.addEventListener('load', resetZoom);
+    photoElement1.addEventListener('load', resetZoom);
+    photoElement2.addEventListener('load', resetZoom);
     
     // Handle touch events for pinch-zoom
     photoWrapper.addEventListener('touchstart', handleTouchStart, { passive: false });
@@ -359,7 +519,7 @@ function handleDoubleTap(e) {
             isZoomed = true;
             
             // Calculate tap position relative to image
-            const rect = photoElement.getBoundingClientRect();
+            const rect = activePhotoElement.getBoundingClientRect();
             const tapX = e.clientX - rect.left;
             const tapY = e.clientY - rect.top;
             
@@ -407,7 +567,7 @@ function handleTouchStart(e) {
         initialTranslateY = translateY;
         
         // Get the position of the pinch center relative to the image
-        const rect = photoElement.getBoundingClientRect();
+        const rect = activePhotoElement.getBoundingClientRect();
         
         // Log debug info
         console.log('Pinch start:', {
@@ -451,7 +611,7 @@ function handleTouchMove(e) {
         const newScale = Math.min(Math.max(initialScale * (currentTouchDistance / lastTouchDistance), 1), 5);
         
         // Get image dimensions
-        const rect = photoElement.getBoundingClientRect();
+        const rect = activePhotoElement.getBoundingClientRect();
         
         // Convert pinch center to image space coordinates (relative to image center)
         const imageCenterX = rect.left + rect.width / 2;
@@ -567,7 +727,7 @@ function handleTouchEnd(e) {
 
 function updatePhotoTransform() {
     // Apply the transform to the image element
-    photoElement.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
+    activePhotoElement.style.transform = `scale(${currentScale}) translate(${translateX}px, ${translateY}px)`;
     
     // Always keep the photo wrapper overflow hidden to prevent scrolling
     photoWrapper.style.overflow = 'hidden';
