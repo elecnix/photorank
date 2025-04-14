@@ -46,6 +46,7 @@ function refreshPhotoCache() {
             const files = fs.readdirSync(dir);
             
             files.forEach(file => {
+                if (file === '@eaDir') return;
                 const fullPath = path.join(dir, file);
                 try {
                     const stat = fs.statSync(fullPath);
