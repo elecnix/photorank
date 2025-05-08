@@ -294,30 +294,10 @@ function calculateAndPrintFolderRanks() {
         console.log('No folders with photos found.');
     } else {
         sortedFolders.forEach(folder => {
-            const depth = folder.depth || folder.folderPath.split('/').length;
+            if (folder.photoCount === folder.totalPhotos) return;
             console.log(`Folder: ${folder.folderPath}`);
-            console.log(`  Depth: ${depth}`);
-            console.log(`  Average Rank: ${folder.averageRank.toFixed(2)}`);
-            console.log(`  Sorted Photos: ${folder.photoCount}`);
-            console.log(`  Unsorted Photos: ${folder.unsortedCount}`);
-            console.log(`  Total Photos: ${folder.totalPhotos}`);
-            console.log(`  Distribution:`);
-            
-            // Print distribution of photos by rank
-            for (let rank = 5; rank >= 1; rank--) {
-                const count = folder.photosByRank[rank] || 0;
-                const percentage = folder.photoCount > 0 ? ((count / folder.photoCount) * 100).toFixed(1) : '0.0';
-                const bar = '█'.repeat(Math.round(percentage / 5));
-                console.log(`    Rank ${rank}: ${count} photos (${percentage}%) ${bar}`);
-            }
-            
-            // Print unsorted photos as a separate category if there are any
-            if (folder.unsortedCount > 0) {
-                const unsortedPercentage = ((folder.unsortedCount / folder.totalPhotos) * 100).toFixed(1);
-                const unsortedBar = '█'.repeat(Math.round(unsortedPercentage / 5));
-                console.log(`    Unsorted: ${folder.unsortedCount} photos (${unsortedPercentage}%) ${unsortedBar}`);
-            }
-            console.log('------------------------------');
+            const sortedRatio = folder.photoCount / folder.totalPhotos;
+            console.log(`  Average Rank: ${folder.averageRank.toFixed(2)}, Sorted Photos: ${folder.photoCount} of ${folder.totalPhotos} (${sortedRatio.toFixed(2) * 100}%)`);
         });
     }
     console.log('\n');
@@ -325,9 +305,25 @@ function calculateAndPrintFolderRanks() {
 
 // Initial cache refresh
 refreshPhotoCache();
+printMassActions();
 
-// Calculate and print folder ranks after cache refresh
-calculateAndPrintFolderRanks();
+// Recommend moving remaining low-score folders to sorted/1
+// or high-scoring folders to sorted/4
+function printMassActions() {
+    const sortedFolders = getFolderRanksData();
+    console.log(`Mass action recommendations:`);
+    sortedFolders.forEach(folder => {
+        const sortedRatio = folder.photoCount / folder.totalPhotos;
+        const averageRank = folder.averageRank;
+        if (averageRank < 3 && sortedRatio > 0.2 && sortedRatio < 1.0) {
+            console.log(`target='sorted/1/${folder.folderPath}' ; mkdir -p "$target" ; mv '${folder.folderPath}' "$target" # average rank ${averageRank}, sorted ${folder.photoCount}/${folder.totalPhotos} (${(sortedRatio * 100).toFixed(2)}%)`);
+        }
+        if (averageRank > 3 && sortedRatio > 0.4 && sortedRatio < 1.0) {
+            console.log(`target='sorted/4/${folder.folderPath}' ; mkdir -p "$target" ; mv '${folder.folderPath}' "$target" # average rank ${averageRank}, sorted ${folder.photoCount}/${folder.totalPhotos} (${(sortedRatio * 100).toFixed(2)}%)`);
+        }
+    });
+}
+
 
 // Function to get a random file from a directory
 function getRandomFile(directory, callback) {
