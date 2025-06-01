@@ -37,6 +37,10 @@ let pinchCenterY = 0;
 let initialTranslateX = 0;
 let initialTranslateY = 0;
 
+// Hover effect timeout variables
+let hoverTimeout = null;
+const HOVER_TIMEOUT_DURATION = 3000; // 3 seconds
+
 // Preload the next photo
 function preloadNextPhoto() {
     // Only preload if we don't have enough preloaded photos
@@ -818,6 +822,106 @@ loadRandomPhoto();
 
 // Initialize pinch-zoom
 setupPinchZoom();
+
+// Setup hover effect timeout when mouse leaves browser or enters middle zone
+function setupHoverEffectTimeout() {
+    const leftHoverZone = document.querySelector('.hover-zone.left');
+    const rightHoverZone = document.querySelector('.hover-zone.right');
+    const photoContainer = document.querySelector('.photo-container');
+    
+    // Function to remove all hover effect classes
+    function removeAllHoverEffects() {
+        if (leftHoverZone) {
+            leftHoverZone.classList.remove('hover-active');
+        }
+        if (rightHoverZone) {
+            rightHoverZone.classList.remove('hover-active');
+        }
+    }
+    
+    // Function to remove hover effect for a specific zone
+    function removeHoverEffect(zone) {
+        if (zone) {
+            zone.classList.remove('hover-active');
+        }
+    }
+    
+    // Start timeout to clear hover effects
+    function startHoverTimeout() {
+        // Clear any existing timeout
+        if (hoverTimeout) {
+            clearTimeout(hoverTimeout);
+        }
+        
+        // Set a new timeout to remove hover effects after 3 seconds
+        hoverTimeout = setTimeout(() => {
+            removeAllHoverEffects();
+        }, HOVER_TIMEOUT_DURATION);
+    }
+    
+    // When mouse leaves the window/document
+    document.addEventListener('mouseleave', () => {
+        startHoverTimeout();
+    });
+    
+    // When mouse enters the window/document, clear the timeout
+    document.addEventListener('mouseenter', () => {
+        if (hoverTimeout) {
+            clearTimeout(hoverTimeout);
+            hoverTimeout = null;
+        }
+    });
+    
+    // Add mouseenter event to left hover zone
+    if (leftHoverZone) {
+        leftHoverZone.addEventListener('mouseenter', () => {
+            // Remove hover effect from right zone first
+            removeHoverEffect(rightHoverZone);
+            // Add hover effect to left zone
+            leftHoverZone.classList.add('hover-active');
+        });
+        
+        // When mouse leaves left zone, remove its hover effect
+        leftHoverZone.addEventListener('mouseleave', () => {
+            removeHoverEffect(leftHoverZone);
+        });
+    }
+    
+    // Add mouseenter event to right hover zone
+    if (rightHoverZone) {
+        rightHoverZone.addEventListener('mouseenter', () => {
+            // Remove hover effect from left zone first
+            removeHoverEffect(leftHoverZone);
+            // Add hover effect to right zone
+            rightHoverZone.classList.add('hover-active');
+        });
+        
+        // When mouse leaves right zone, remove its hover effect
+        rightHoverZone.addEventListener('mouseleave', () => {
+            removeHoverEffect(rightHoverZone);
+        });
+    }
+    
+    // Handle middle zone (the area between left and right zones)
+    // We'll detect this by checking when the mouse is over the photo container
+    // but not over any of the hover zones
+    if (photoContainer) {
+        photoContainer.addEventListener('mousemove', (event) => {
+            // Check if the mouse is over any hover zone
+            const isOverLeftZone = event.target === leftHoverZone || event.target.closest('.hover-zone.left');
+            const isOverRightZone = event.target === rightHoverZone || event.target.closest('.hover-zone.right');
+            
+            // If not over any hover zone, we're in the middle zone
+            if (!isOverLeftZone && !isOverRightZone) {
+                // Start the timeout to clear hover effects
+                startHoverTimeout();
+            }
+        });
+    }
+}
+
+// Initialize hover effect timeout
+setupHoverEffectTimeout();
 
 // Ensure we always have preloaded photos ready
 setTimeout(() => {

@@ -105,12 +105,24 @@ h1 {
     right: 0;
 }
 
-.hover-zone.left:hover {
+.hover-zone.left:hover,
+.hover-zone.left.hover-active {
     background-color: rgba(255, 50, 50, 0.1);
 }
 
-.hover-zone.right:hover {
+.hover-zone.right:hover,
+.hover-zone.right.hover-active {
     background-color: rgba(50, 255, 50, 0.1);
+}
+
+/* Transition for smooth appearance/disappearance of hover effect */
+.hover-zone {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 33.33%;
+    z-index: 5;
+    transition: background-color 0.3s ease;
 }
 
 .photo {
