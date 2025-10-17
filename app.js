@@ -77,6 +77,24 @@ function preloadNextPhoto() {
                     return;
                 }
                 
+                // Check if this photo is the same as the currently displayed photo
+                if (data.photo === currentPhoto && data.directory === currentDirectory) {
+                    console.log('Fetched photo is the same as current photo, re-fetching...');
+                    // Re-fetch a different photo by calling preloadNextPhoto again
+                    setTimeout(preloadNextPhoto, 100);
+                    return;
+                }
+                
+                // Check if this photo is already in the preloaded queue
+                const isDuplicate = preloadedPhotos.some(p => 
+                    p.photo === data.photo && p.directory === data.directory
+                );
+                if (isDuplicate) {
+                    console.log('Fetched photo is already in preload queue, re-fetching...');
+                    setTimeout(preloadNextPhoto, 100);
+                    return;
+                }
+                
                 // Create a new image element to preload the next photo
                 const img = new Image();
                 
