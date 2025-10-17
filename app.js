@@ -228,6 +228,11 @@ function loadRandomPhoto() {
         currentPhoto = preloadedPhoto.photo;
         currentDirectory = preloadedPhoto.directory;
         
+        // Update the photo name display
+        const photoName = getPhotoName(currentDirectory, currentPhoto);
+        photoNameElement.textContent = photoName;
+        console.log('Updated photo name to:', photoName);
+        
         // Swap active and inactive elements
         activePhotoElement.classList.remove('active');
         inactivePhotoElement.classList.add('active');
@@ -267,6 +272,12 @@ function loadRandomPhoto() {
             .then(data => {
                 currentPhoto = data.photo;
                 currentDirectory = data.directory;
+                
+                // Update the photo name display
+                const photoName = getPhotoName(currentDirectory, currentPhoto);
+                photoNameElement.textContent = photoName;
+                console.log('Updated photo name to:', photoName);
+                
                 // Handle case where directory is empty (base directory)
                 const photoPath = currentDirectory ? `/photos/${currentDirectory}/${currentPhoto}` : `/photos/${currentPhoto}`;
                 console.log('Loading photo directly:', photoPath);
