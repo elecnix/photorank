@@ -14,6 +14,22 @@ let isProcessing = false;
 let preloadedPhotos = [];
 const MAX_PRELOADED = 3; // Keep up to 3 photos preloaded
 
+// Get the photo name element
+const photoNameElement = document.getElementById('photo-name');
+
+// Function to get the photo name (path excluding ranking and file name)
+function getPhotoName(directory, photo) {
+    let fullPath = directory ? directory + '/' + photo : photo;
+    let parts = fullPath.split('/');
+    // Remove the last part (file name)
+    parts.pop();
+    // If the first part is 'sorted' and the second is a number, remove the second
+    if (parts.length >= 2 && parts[0] === 'sorted' && /^\d+$/.test(parts[1])) {
+        parts.splice(1, 1);
+    }
+    return parts.join('/');
+}
+
 // Pinch zoom variables
 let currentScale = 1;
 let initialScale = 1;
