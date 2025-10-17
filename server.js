@@ -3,8 +3,11 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 
+// Precompile regex for image extensions to avoid recompilation on each file check
+const imageExtensions = /\.(jpg|jpeg|png|gif|bmp)$/i;
+
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 6900;
 
 // Get base directory from environment or use default
 const baseDir = process.env.PHOTO_BASE_DIR || path.join(__dirname, 'photos');
@@ -30,69 +33,99 @@ const photoCache = {
     sorted: {}
 };
 
+// Flag to prevent concurrent cache refreshes
+let isRefreshingCache = false;
+let currentRefreshPromise = null;
+
 // Function to refresh the photo cache
-function refreshPhotoCache() {
-    console.log('Refreshing photo cache...');
-    const startTime = Date.now();
+async function refreshPhotoCache() {
+    // If a refresh is already in progress, wait for it to complete
+    if (isRefreshingCache && currentRefreshPromise) {
+        console.log('Cache refresh already in progress, waiting...');
+        return currentRefreshPromise;
+    }
     
-    // Clear the existing cache
-    photoCache.base = [];
-    photoCache.sorted = {};
-    
-    // Recursively find all photo files in a directory and its subdirectories
-    const findPhotosRecursively = (dir, relativeTo) => {
-        let photos = [];
+    // Start the refresh operation
+    isRefreshingCache = true;
+    currentRefreshPromise = (async () => {
         try {
-            const files = fs.readdirSync(dir);
+            console.log('Refreshing photo cache...');
+            const startTime = Date.now();
             
-            files.forEach(file => {
-                if (file === '@eaDir') return;
-                const fullPath = path.join(dir, file);
+            // Clear the existing cache
+            photoCache.base = [];
+            photoCache.sorted = {};
+            
+            // Recursively find all photo files in a directory and its subdirectories
+            const findPhotosRecursively = async (dir, relativeTo) => {
+                let photos = [];
                 try {
-                    const stat = fs.statSync(fullPath);
+                    const files = await fs.promises.readdir(dir, { withFileTypes: true });
                     
-                    // Skip the 'sorted' directory when scanning the base directory
-                    if (dir === baseDir && file === 'sorted') {
-                        return;
-                    }
+                    // Process files and subdirectories in parallel
+                    const promises = files.map(async file => {
+                        if (file.name === '@eaDir') return;
+                        const fullPath = path.join(dir, file.name);
+                        
+                        // Skip the 'sorted' directory when scanning the base directory
+                        if (dir === baseDir && file.name === 'sorted') {
+                            return;
+                        }
+                        
+                        if (file.isDirectory()) {
+                            // Recursively search subdirectories
+                            const subPhotos = await findPhotosRecursively(fullPath, relativeTo);
+                            photos.push(...subPhotos);
+                        } else if (file.isFile() && imageExtensions.test(file.name)) {
+                            // Add photo files, preserving relative path from the relative directory
+                            const relativePath = path.relative(relativeTo, fullPath);
+                            photos.push(relativePath);
+                        }
+                    });
                     
-                    if (stat.isDirectory()) {
-                        // Recursively search subdirectories
-                        photos = photos.concat(findPhotosRecursively(fullPath, relativeTo));
-                    } else if (/\.(jpg|jpeg|png|gif|bmp)$/i.test(file)) {
-                        // Add photo files, preserving relative path from the relative directory
-                        const relativePath = path.relative(relativeTo, fullPath);
-                        photos.push(relativePath);
-                    }
+                    await Promise.all(promises);
                 } catch (err) {
-                    console.error(`Error accessing ${fullPath}:`, err);
+                    console.error(`Error reading directory ${dir}:`, err);
                 }
-            });
-        } catch (err) {
-            console.error(`Error reading directory ${dir}:`, err);
+                
+                return photos;
+            };
+            
+            try {
+                // Scan all directories in parallel
+                const scanPromises = [
+                    findPhotosRecursively(baseDir, baseDir),
+                    ...Object.values(sortedDirs).map(dir => findPhotosRecursively(dir, dir))
+                ];
+                
+                const results = await Promise.all(scanPromises);
+                
+                // Assign results to cache
+                photoCache.base = results[0] || [];
+                Object.keys(sortedDirs).forEach((key, index) => {
+                    photoCache.sorted[key] = results[index + 1] || [];
+                });
+                
+                const endTime = Date.now();
+                console.log(`Photo cache refreshed in ${endTime - startTime}ms`);
+                console.log(`Found ${photoCache.base.length} photos in base directory`);
+                Object.keys(photoCache.sorted).forEach(key => {
+                    console.log(`Found ${photoCache.sorted[key].length} photos in sorted/${key}`);
+                });
+                
+                // Calculate and print folder ranks after cache refresh
+                calculateAndPrintFolderRanks();
+            } catch (error) {
+                console.error('Error refreshing photo cache:', error);
+            }
+        } finally {
+            // Always reset the flag when done
+            isRefreshingCache = false;
+            currentRefreshPromise = null;
         }
-        
-        return photos;
-    };
+    })();
     
-    // Cache base directory photos
-    photoCache.base = findPhotosRecursively(baseDir, baseDir);
-    
-    // Cache sorted directory photos
-    Object.keys(sortedDirs).forEach(key => {
-        const sortedDir = sortedDirs[key];
-        photoCache.sorted[key] = findPhotosRecursively(sortedDir, sortedDir);
-    });
-    
-    const endTime = Date.now();
-    console.log(`Photo cache refreshed in ${endTime - startTime}ms`);
-    console.log(`Found ${photoCache.base.length} photos in base directory`);
-    Object.keys(photoCache.sorted).forEach(key => {
-        console.log(`Found ${photoCache.sorted[key].length} photos in sorted/${key}`);
-    });
-    
-    // Calculate and print folder ranks after cache refresh
-    calculateAndPrintFolderRanks();
+    return currentRefreshPromise;
 }
 
 app.use(express.json());
@@ -303,10 +336,6 @@ function calculateAndPrintFolderRanks() {
     console.log('\n');
 }
 
-// Initial cache refresh
-refreshPhotoCache();
-printMassActions();
-
 // Recommend moving remaining low-score folders to sorted/1
 // or high-scoring folders to sorted/4
 function printMassActions() {
@@ -316,13 +345,23 @@ function printMassActions() {
         const sortedRatio = folder.photoCount / folder.totalPhotos;
         const averageRank = folder.averageRank;
         if (averageRank < 3 && sortedRatio > 0.2 && sortedRatio < 1.0) {
-            console.log(`target='sorted/1/${folder.folderPath}' ; mkdir -p "$target" ; mv '${folder.folderPath}' "$target" # average rank ${averageRank}, sorted ${folder.photoCount}/${folder.totalPhotos} (${(sortedRatio * 100).toFixed(2)}%)`);
+            console.log(`target='sorted/1/${folder.folderPath}' ; mkdir -p "$target" ; cp -r '${folder.folderPath}'/* "$target/" && rm -rf '${folder.folderPath}' # average rank ${averageRank}, sorted ${folder.photoCount}/${folder.totalPhotos} (${(sortedRatio * 100).toFixed(2)}%)`);
         }
         if (averageRank > 3 && sortedRatio > 0.4 && sortedRatio < 1.0) {
-            console.log(`target='sorted/4/${folder.folderPath}' ; mkdir -p "$target" ; mv '${folder.folderPath}' "$target" # average rank ${averageRank}, sorted ${folder.photoCount}/${folder.totalPhotos} (${(sortedRatio * 100).toFixed(2)}%)`);
+            console.log(`target='sorted/4/${folder.folderPath}' ; mkdir -p "$target" ; cp -r '${folder.folderPath}'/* "$target/" && rm -rf '${folder.folderPath}' # average rank ${averageRank}, sorted ${folder.photoCount}/${folder.totalPhotos} (${(sortedRatio * 100).toFixed(2)}%)`);
         }
     });
 }
+
+// Initial cache refresh
+(async () => {
+    await refreshPhotoCache();
+    printMassActions();
+    
+    app.listen(PORT, () => {
+        console.log(`Server is running on http://localhost:${PORT}`);
+    });
+})();
 
 
 // Function to get a random file from a directory
@@ -341,7 +380,8 @@ function getRandomFile(directory, callback) {
 }
 
 // Function to get a random photo from the cache
-function getRandomPhoto(callback) {
+function getRandomPhoto() {
+    return new Promise(async (resolve, reject) => {
     // Helper function to get a random photo from an array
     function getRandomFromArray(array) {
         if (array.length === 0) return null;
@@ -363,11 +403,11 @@ function getRandomPhoto(callback) {
     function selectFolderByProbability() {
         // Define probabilities for each folder (in percentage)
         const probabilities = {
-            '1': 0,    // 0%
-            '2': 20,   // 20%
-            '3': 50,   // 50%
-            '4': 20,   // 20%
-            '5': 10    // 10%
+            '1': 0,
+            '2': 10,
+            '3': 60,
+            '4': 20,
+            '5': 10
         };
         
         // Generate a random number between 0 and 100
@@ -408,11 +448,14 @@ function getRandomPhoto(callback) {
     }
     
     try {
-        // First try to get photos from the base directory cache (unsorted)
-        if (photoCache.base.length > 0) {
+        // Decide if we should prefer already-sorted photos (20% chance)
+        const preferSorted = Math.random() < 0.20;
+        
+        // In 80% of cases, first try to get photos from the base directory cache (unsorted)
+        if (!preferSorted && photoCache.base.length > 0) {
             const result = tryGetPhotoFromFolder('base', '');
             if (result) {
-                return callback(null, result.photo, result.directory);
+                return resolve({ photo: result.photo, directory: result.directory });
             }
         }
         
@@ -425,13 +468,13 @@ function getRandomPhoto(callback) {
         
         // If we have no available folders with photos, refresh and try again
         if (availableFolders.length === 0) {
-            refreshPhotoCache();
+            await refreshPhotoCache();
             
             // Try base directory again after refreshing
             if (photoCache.base.length > 0) {
                 const result = tryGetPhotoFromFolder('base', '');
                 if (result) {
-                    return callback(null, result.photo, result.directory);
+                    return resolve({ photo: result.photo, directory: result.directory });
                 }
             }
         }
@@ -449,7 +492,7 @@ function getRandomPhoto(callback) {
             // Try to get a photo from the selected folder
             const randomPhoto = getRandomFromArray(photoCache.sorted[selectedFolder]);
             if (randomPhoto && verifyPhotoExists(randomPhoto, `sorted/${selectedFolder}`)) {
-                return callback(null, randomPhoto, `sorted/${selectedFolder}`);
+                return resolve({ photo: randomPhoto, directory: `sorted/${selectedFolder}` });
             } else if (randomPhoto) {
                 // Remove invalid photo from cache
                 const index = photoCache.sorted[selectedFolder].indexOf(randomPhoto);
@@ -463,13 +506,13 @@ function getRandomPhoto(callback) {
         
         // If we've tried several photos and none exist, refresh the cache if we haven't already
         if (availableFolders.length > 0) {
-            refreshPhotoCache();
+            await refreshPhotoCache();
             
             // Try base directory one more time
             if (photoCache.base.length > 0) {
                 const randomPhoto = getRandomFromArray(photoCache.base);
                 if (randomPhoto && verifyPhotoExists(randomPhoto, '')) {
-                    return callback(null, randomPhoto, '');
+                    return resolve({ photo: randomPhoto, directory: '' });
                 }
             }
             
@@ -478,30 +521,27 @@ function getRandomPhoto(callback) {
             if (photoCache.sorted[selectedFolder].length > 0) {
                 const randomPhoto = getRandomFromArray(photoCache.sorted[selectedFolder]);
                 if (randomPhoto && verifyPhotoExists(randomPhoto, `sorted/${selectedFolder}`)) {
-                    return callback(null, randomPhoto, `sorted/${selectedFolder}`);
+                    return resolve({ photo: randomPhoto, directory: `sorted/${selectedFolder}` });
                 }
             }
         }
         
         // If we get here, no photos were found anywhere
-        return callback(new Error('No photos found in any directory'));
+        return reject(new Error('No photos found in any directory'));
     } catch (err) {
-        callback(err);
+        reject(err);
     }
+    }); // Close the Promise
 }
 
-app.get('/random-photo', (req, res) => {
-    getRandomPhoto((err, photo, directory) => {
-        if (err) {
-            console.error('Error getting random photo:', err);
-            return res.status(500).send('Error getting random photo');
-        }
-        
-        // Directory is already relative to baseDir
-        // If directory is empty, it means the photo is in the base directory
-        
+app.get('/random-photo', async (req, res) => {
+    try {
+        const { photo, directory } = await getRandomPhoto();
         res.json({ photo, directory });
-    });
+    } catch (err) {
+        console.error('Error getting random photo:', err);
+        return res.status(500).send('Error getting random photo');
+    }
 });
 
 app.post('/like', (req, res) => {
@@ -687,8 +727,8 @@ app.post('/dislike', (req, res) => {
 });
 
 // Add an endpoint to refresh the cache manually
-app.get('/refresh-cache', (req, res) => {
-    refreshPhotoCache();
+app.get('/refresh-cache', async (req, res) => {
+    await refreshPhotoCache();
     
     // Get folder ranks data for the response
     const folderRanks = getFolderRanksData();
@@ -741,8 +781,4 @@ app.get('/download-folder-rankings', (req, res) => {
     
     // Send the CSV content
     res.send(csvContent);
-});
-
-app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
 });
