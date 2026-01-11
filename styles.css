@@ -132,12 +132,12 @@ h1 {
     display: block;
     cursor: pointer;
     transform-origin: center;
-    transition: transform 0.05s linear;
-    will-change: transform;
+    transition: transform 0.05s linear, opacity 0.15s ease-in-out;
+    will-change: transform, opacity;
     -webkit-backface-visibility: hidden;
     backface-visibility: hidden;
     -webkit-transform-origin: center;
-    -webkit-transition: -webkit-transform 0.05s linear;
+    -webkit-transition: -webkit-transform 0.05s linear, opacity 0.15s ease-in-out;
     position: absolute;
     opacity: 0;
     pointer-events: none;
@@ -147,6 +147,11 @@ h1 {
     opacity: 1;
     pointer-events: auto;
     z-index: 2;
+}
+
+.photo.instant {
+    transition: none !important;
+    -webkit-transition: none !important;
 }
 
 .instructions {
@@ -371,6 +376,67 @@ h1 {
 @keyframes fadeOut {
     from { opacity: 1; transform: translate(-50%, 0); }
     to { opacity: 0; transform: translate(-50%, -20px); }
+}
+
+/* Loading Spinner Styles */
+.loading-spinner {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+}
+
+.loading-spinner.hidden {
+    opacity: 0;
+}
+
+.loading-spinner.visible {
+    opacity: 1;
+}
+
+.spinner {
+    width: 50px;
+    height: 50px;
+    border: 4px solid rgba(255, 255, 255, 0.3);
+    border-top: 4px solid #fff;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+.loading-text {
+    color: #fff;
+    font-size: 16px;
+    margin-top: 15px;
+    font-family: Arial, sans-serif;
+    background-color: rgba(0, 0, 0, 0.7);
+    padding: 8px 16px;
+    border-radius: 20px;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Disabled state for buttons */
+.btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
+.btn:disabled:hover {
+    transform: none !important;
+    box-shadow: none !important;
 }
 
 @media (max-width: 600px) {

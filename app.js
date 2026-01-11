@@ -12,10 +12,58 @@ let isProcessing = false;
 
 // Preloaded photo cache
 let preloadedPhotos = [];
-const MAX_PRELOADED = 3; // Keep up to 3 photos preloaded
+const MAX_PRELOADED = 5; // Keep up to 5 photos preloaded
 
 // Get the photo name element
 const photoNameElement = document.getElementById('photo-name');
+
+// Get the loading spinner element
+const loadingSpinner = document.getElementById('loading-spinner');
+
+// Function to show loading spinner and disable controls
+function showLoadingSpinner() {
+    loadingSpinner.classList.remove('hidden');
+    loadingSpinner.classList.add('visible');
+    photoNameElement.textContent = '';
+    disableRankingControls();
+    disableHoverZones();
+}
+
+// Function to hide loading spinner and enable controls
+function hideLoadingSpinner() {
+    loadingSpinner.classList.remove('visible');
+    loadingSpinner.classList.add('hidden');
+    enableRankingControls();
+    enableHoverZones();
+}
+
+// Function to disable ranking controls
+function disableRankingControls() {
+    dislikeButton.disabled = true;
+    likeButton.disabled = true;
+}
+
+// Function to enable ranking controls
+function enableRankingControls() {
+    dislikeButton.disabled = false;
+    likeButton.disabled = false;
+}
+
+// Function to disable hover zones
+function disableHoverZones() {
+    const hoverZones = document.querySelectorAll('.hover-zone');
+    hoverZones.forEach(zone => {
+        zone.style.pointerEvents = 'none';
+    });
+}
+
+// Function to enable hover zones
+function enableHoverZones() {
+    const hoverZones = document.querySelectorAll('.hover-zone');
+    hoverZones.forEach(zone => {
+        zone.style.pointerEvents = 'auto';
+    });
+}
 
 // Function to get the photo name (path excluding ranking and file name)
 function getPhotoName(directory, photo) {
@@ -111,37 +159,48 @@ function preloadNextPhoto() {
                     decoded: false // Will be set to true when decoded
                 };
                 
+                // Add to preloaded photos array before loading starts
+                preloadedPhotos.push(preloadedPhoto);
+                
                 console.log('Starting to preload photo:', photoPath);
                 
                 // Set up load event handler before setting src
                 img.onload = () => {
-                    console.log('Preloaded photo loaded, now decoding:', photoPath);
+                    console.log('Preloaded photo loaded:', photoPath);
+                    preloadedPhoto.loaded = true;
                     
-                    // Use the decode() method to pre-decode the image in the background
-                    // This moves the expensive decode operation off the main thread
-                    img.decode().then(() => {
-                        console.log('Preloaded photo fully decoded:', photoPath);
-                        preloadedPhoto.loaded = true;
-                        preloadedPhoto.decoded = true;
-                        
-                        // If we still need more photos, keep preloading
-                        if (preloadedPhotos.length < MAX_PRELOADED) {
-                            setTimeout(preloadNextPhoto, 100);
-                        }
-                    }).catch(error => {
-                        console.error('Error decoding preloaded photo:', photoPath, error);
-                        // Even if decoding fails, mark as loaded so we can still use it
-                        preloadedPhoto.loaded = true;
-                        
-                        // If we still need more photos, keep preloading
-                        if (preloadedPhotos.length < MAX_PRELOADED) {
-                            setTimeout(preloadNextPhoto, 100);
-                        }
-                    });
+                    // Schedule decoding in the background to avoid blocking UI
+                    setTimeout(() => {
+                        img.decode().then(() => {
+                            console.log('Preloaded photo fully decoded:', photoPath);
+                            preloadedPhoto.decoded = true;
+                            
+                            // If we still need more photos, keep preloading
+                            if (preloadedPhotos.length < MAX_PRELOADED) {
+                                setTimeout(preloadNextPhoto, 100);
+                            }
+                        }).catch(error => {
+                            // Handle decoding errors - remove problematic photo from cache
+                            if (error.name === 'EncodingError' || error.message.includes('cannot be decoded')) {
+                                console.warn('Removing corrupted photo from preload cache:', photoPath);
+                                const index = preloadedPhotos.indexOf(preloadedPhoto);
+                                if (index !== -1) {
+                                    preloadedPhotos.splice(index, 1);
+                                }
+                            } else {
+                                console.error('Error decoding preloaded photo:', photoPath, error);
+                            }
+                            
+                            // If we still need more photos, keep preloading
+                            if (preloadedPhotos.length < MAX_PRELOADED) {
+                                setTimeout(preloadNextPhoto, 100);
+                            }
+                        });
+                    }, 0); // Schedule for next event loop cycle
                 };
                 
                 img.onerror = () => {
-                    console.error('Failed to load preloaded photo:', photoPath);
+                    console.warn('Failed to load preloaded photo (possibly corrupted):', photoPath);
                     
                     // Remove this photo from the preloaded array if it was added
                     const index = preloadedPhotos.indexOf(preloadedPhoto);
@@ -149,14 +208,11 @@ function preloadNextPhoto() {
                         preloadedPhotos.splice(index, 1);
                     }
                     
-                    // Try preloading again
+                    // Try preloading another photo
                     setTimeout(preloadNextPhoto, 500);
                 };
                 
-                // Add to preloaded photos array before loading starts
-                preloadedPhotos.push(preloadedPhoto);
-                
-                // Start loading the image
+                // Start loading the image (this also serves as validation)
                 img.src = photoPath;
             })
             .catch(error => {
@@ -189,33 +245,65 @@ function displayNextPhoto() {
         currentPhoto = nextPhoto.photo;
         currentDirectory = nextPhoto.directory;
         
-        // Swap active and inactive elements
-        activePhotoElement.classList.remove('active');
-        inactivePhotoElement.classList.add('active');
+        // Hide loading spinner since we have a photo to display
+        hideLoadingSpinner();
         
-        // Swap the references
-        const temp = activePhotoElement;
-        activePhotoElement = inactivePhotoElement;
-        inactivePhotoElement = temp;
+        // Set up load event handler to update photo name when image finishes rendering
+        const updatePhotoName = () => {
+            const photoName = getPhotoName(currentDirectory, currentPhoto);
+            photoNameElement.textContent = photoName;
+            console.log('Updated photo name to:', photoName);
+        };
         
-        // Log the status of the photo we're displaying
-        console.log('Displaying preloaded photo:', nextPhoto.path, 
-                   'Loaded:', nextPhoto.loaded, 'Decoded:', nextPhoto.decoded);
+        // Function to actually show the new photo when it's ready
+        const showNewPhoto = (useInstant = false) => {
+            // Add instant class if requested to bypass transitions
+            if (useInstant) {
+                inactivePhotoElement.classList.add('instant');
+            } else {
+                inactivePhotoElement.classList.remove('instant');
+            }
+            
+            // Swap active and inactive elements
+            activePhotoElement.classList.remove('active');
+            inactivePhotoElement.classList.add('active');
+            
+            // Swap the references
+            const temp = activePhotoElement;
+            activePhotoElement = inactivePhotoElement;
+            inactivePhotoElement = temp;
+            
+            // Clear the old photo from the now-inactive element to prevent it from showing
+            inactivePhotoElement.src = '';
+            
+            // Remove instant class from the now-inactive element
+            inactivePhotoElement.classList.remove('instant');
+            
+            // Update the photo name
+            updatePhotoName();
+        };
+        
+        // Clear the inactive element first to prevent old photo from showing
+        inactivePhotoElement.src = '';
         
         // If we have a decoded image, use it directly
         if (nextPhoto.decoded && nextPhoto.img) {
-            // Clone the already decoded image to the active element
-            // This is much faster than loading from URL again
-            activePhotoElement.src = nextPhoto.img.src;
+            // Set the new photo src on the inactive element first
+            inactivePhotoElement.src = nextPhoto.img.src;
+            // Show the new photo immediately since it's already decoded
+            showNewPhoto(true); // Use instant display for preloaded photos
         } else {
-            // Fallback to setting the src directly
-            activePhotoElement.src = nextPhoto.path;
+            // Set the new photo src on the inactive element and wait for it to load
+            inactivePhotoElement.onload = showNewPhoto;
+            inactivePhotoElement.src = nextPhoto.path;
         }
         
         // Preload the next photo after displaying the current one
         preloadNextPhoto();
     } else {
-        // Fallback to loading a random photo if no preloaded photos are available
+        // No preloaded photos available, show loading spinner
+        showLoadingSpinner();
+        // Try to load a random photo
         loadRandomPhoto();
     }
 }
@@ -246,31 +334,57 @@ function loadRandomPhoto() {
         currentPhoto = preloadedPhoto.photo;
         currentDirectory = preloadedPhoto.directory;
         
-        // Update the photo name display
-        const photoName = getPhotoName(currentDirectory, currentPhoto);
-        photoNameElement.textContent = photoName;
-        console.log('Updated photo name to:', photoName);
+        // Hide loading spinner since we have a photo to display
+        hideLoadingSpinner();
         
-        // Swap active and inactive elements
-        activePhotoElement.classList.remove('active');
-        inactivePhotoElement.classList.add('active');
+        // Set up load event handler to update photo name when image finishes rendering
+        const updatePhotoName = () => {
+            const photoName = getPhotoName(currentDirectory, currentPhoto);
+            photoNameElement.textContent = photoName;
+            console.log('Updated photo name to:', photoName);
+        };
         
-        // Swap the references
-        const temp = activePhotoElement;
-        activePhotoElement = inactivePhotoElement;
-        inactivePhotoElement = temp;
+        // Function to actually show the new photo when it's ready
+        const showNewPhoto = (useInstant = false) => {
+            // Add instant class if requested to bypass transitions
+            if (useInstant) {
+                inactivePhotoElement.classList.add('instant');
+            } else {
+                inactivePhotoElement.classList.remove('instant');
+            }
+            
+            // Swap active and inactive elements
+            activePhotoElement.classList.remove('active');
+            inactivePhotoElement.classList.add('active');
+            
+            // Swap the references
+            const temp = activePhotoElement;
+            activePhotoElement = inactivePhotoElement;
+            inactivePhotoElement = temp;
+            
+            // Clear the old photo from the now-inactive element to prevent it from showing
+            inactivePhotoElement.src = '';
+            
+            // Remove instant class from the now-inactive element
+            inactivePhotoElement.classList.remove('instant');
+            
+            // Update the photo name
+            updatePhotoName();
+        };
         
-        console.log('Loading preloaded photo:', preloadedPhoto.path, 
-                   'Loaded:', preloadedPhoto.loaded, 'Decoded:', preloadedPhoto.decoded);
+        // Clear the inactive element first to prevent old photo from showing
+        inactivePhotoElement.src = '';
         
         // If we have a decoded image, use it directly
         if (preloadedPhoto.decoded && preloadedPhoto.img) {
-            // Clone the already decoded image to the active element
-            // This is much faster than loading from URL again
-            activePhotoElement.src = preloadedPhoto.img.src;
+            // Set the new photo src on the inactive element first
+            inactivePhotoElement.src = preloadedPhoto.img.src;
+            // Show the new photo immediately since it's already decoded
+            showNewPhoto(true); // Use instant display for preloaded photos
         } else {
-            // Fallback to setting the src directly
-            activePhotoElement.src = preloadedPhoto.path;
+            // Set the new photo src on the inactive element and wait for it to load
+            inactivePhotoElement.onload = showNewPhoto;
+            inactivePhotoElement.src = preloadedPhoto.path;
         }
         
         isProcessing = false;
@@ -291,10 +405,8 @@ function loadRandomPhoto() {
                 currentPhoto = data.photo;
                 currentDirectory = data.directory;
                 
-                // Update the photo name display
-                const photoName = getPhotoName(currentDirectory, currentPhoto);
-                photoNameElement.textContent = photoName;
-                console.log('Updated photo name to:', photoName);
+                // Hide loading spinner since we received photo data
+                hideLoadingSpinner();
                 
                 // Handle case where directory is empty (base directory)
                 const photoPath = currentDirectory ? `/photos/${currentDirectory}/${currentPhoto}` : `/photos/${currentPhoto}`;
@@ -305,39 +417,48 @@ function loadRandomPhoto() {
                 
                 // Set up load event handler
                 img.onload = () => {
-                    console.log('Direct loaded photo, now decoding:', photoPath);
+                    console.log('Direct loaded photo:', photoPath);
                     
-                    // Try to decode the image before displaying it
-                    img.decode().then(() => {
-                        console.log('Direct loaded photo decoded successfully');
-                        
-                        // Now display the decoded image
-                        // Swap active and inactive elements
-                        activePhotoElement.classList.remove('active');
-                        inactivePhotoElement.classList.add('active');
-                        
-                        // Swap the references
-                        const temp = activePhotoElement;
-                        activePhotoElement = inactivePhotoElement;
-                        inactivePhotoElement = temp;
-                        
-                        // Use the already decoded image
-                        activePhotoElement.src = img.src;
-                        isProcessing = false;
-                    }).catch(error => {
-                        console.error('Error decoding direct loaded photo:', error);
-                        
-                        // Even if decoding fails, still display the image
-                        activePhotoElement.classList.remove('active');
-                        inactivePhotoElement.classList.add('active');
-                        
-                        const temp = activePhotoElement;
-                        activePhotoElement = inactivePhotoElement;
-                        inactivePhotoElement = temp;
-                        
-                        activePhotoElement.src = photoPath;
-                        isProcessing = false;
-                    });
+                    // Display the photo immediately without waiting for decode
+                    // Clear the inactive element first to prevent old photo from showing
+                    inactivePhotoElement.src = '';
+                    
+                    // Set the new photo src on the inactive element first
+                    inactivePhotoElement.src = img.src;
+                    
+                    // Now swap and show the new photo
+                    // Swap active and inactive elements
+                    activePhotoElement.classList.remove('active');
+                    inactivePhotoElement.classList.add('active');
+                    
+                    // Swap the references
+                    const temp = activePhotoElement;
+                    activePhotoElement = inactivePhotoElement;
+                    inactivePhotoElement = temp;
+                    
+                    // Clear the old photo from the now-inactive element to prevent it from showing
+                    inactivePhotoElement.src = '';
+                    
+                    // Update the photo name display after image is rendered
+                    const photoName = getPhotoName(currentDirectory, currentPhoto);
+                    photoNameElement.textContent = photoName;
+                    console.log('Updated photo name to:', photoName);
+                    
+                    isProcessing = false;
+                    
+                    // Decode in the background to improve future performance
+                    setTimeout(() => {
+                        img.decode().then(() => {
+                            console.log('Direct loaded photo decoded in background');
+                        }).catch(error => {
+                            // Handle decoding errors gracefully
+                            if (error.name === 'EncodingError' || error.message.includes('cannot be decoded')) {
+                                console.warn('Direct loaded photo has decoding issues (will still display):', photoPath);
+                            } else {
+                                console.error('Error decoding direct loaded photo in background:', error);
+                            }
+                        });
+                    }, 0);
                     
                     // Start preloading photos for next time
                     preloadNextPhoto();
@@ -347,6 +468,9 @@ function loadRandomPhoto() {
                     console.error('Error loading direct photo:', photoPath);
                     activePhotoElement.alt = 'No photos available';
                     isProcessing = false;
+                    
+                    // Keep loading spinner visible since no photo loaded
+                    // Don't hide it here - let the user see we're still trying
                     
                     // Try preloading anyway
                     preloadNextPhoto();
@@ -359,23 +483,36 @@ function loadRandomPhoto() {
                 console.error('Error loading photo:', error);
                 activePhotoElement.alt = 'No photos available';
                 isProcessing = false;
+                
+                // Keep loading spinner visible since no photo could be loaded
+                // Don't hide it here - let the user see we're still trying
             });
     }
 }
 
-function showFloatingEmoji(action, clickX) {
+function showFloatingEmoji(action, clickX = null, rating = null) {
     const photoRect = activePhotoElement.getBoundingClientRect();
     const emoji = document.createElement('div');
-    emoji.className = `floating-emoji ${action === 'like' ? 'up' : 'down'}`;
-    emoji.textContent = action === 'like' ? '👍🏼' : '👎🏼';
-    emoji.style.top = (photoRect.top + photoRect.height / 2) + 'px';
     
-    // Position on the sides
-    if (action === 'like') {
-        emoji.style.left = (photoRect.right - 100) + 'px';
+    if (action === 'rate' && rating !== null) {
+        // For rating actions, show the number
+        emoji.className = 'floating-emoji up';
+        emoji.textContent = `${rating}⭐`;
+        emoji.style.left = (photoRect.left + photoRect.width / 2 - 30) + 'px';
     } else {
-        emoji.style.left = (photoRect.left + 100) + 'px';
+        // Traditional like/dislike
+        emoji.className = `floating-emoji ${action === 'like' ? 'up' : 'down'}`;
+        emoji.textContent = action === 'like' ? '👍🏼' : '👎🏼';
+        
+        // Position on the sides
+        if (action === 'like') {
+            emoji.style.left = (photoRect.right - 100) + 'px';
+        } else {
+            emoji.style.left = (photoRect.left + 100) + 'px';
+        }
     }
+    
+    emoji.style.top = (photoRect.top + photoRect.height / 2) + 'px';
     
     document.body.appendChild(emoji);
     
@@ -441,16 +578,34 @@ async function yieldToMain() {
     });
 }
 
-async function handlePhotoAction(action) {
+async function handlePhotoAction(action, rating = null) {
     if (!currentPhoto) return;
     
     // Save the current photo info for the background request
     const photoToAction = currentPhoto;
     const directoryToAction = currentDirectory;
     
-    // Send the like/dislike action for the CURRENT photo before displaying the next one
+    // Send the action for the CURRENT photo before displaying the next one
     // This ensures we're rating the photo that's currently visible
-    const endpoint = action === 'like' ? '/like' : '/dislike';
+    let endpoint;
+    let requestBody;
+    
+    if (rating !== null) {
+        // Direct rating (1-5)
+        endpoint = '/rate';
+        requestBody = { 
+            photo: photoToAction,
+            directory: directoryToAction,
+            rating: rating
+        };
+    } else {
+        // Traditional like/dislike
+        endpoint = action === 'like' ? '/like' : '/dislike';
+        requestBody = { 
+            photo: photoToAction,
+            directory: directoryToAction
+        };
+    }
     
     try {
         // Start the fetch request but don't await it yet
@@ -459,10 +614,7 @@ async function handlePhotoAction(action) {
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ 
-                photo: photoToAction,
-                directory: directoryToAction
-            }),
+            body: JSON.stringify(requestBody),
         });
         
         // Now display the next photo immediately for better UI responsiveness
@@ -501,12 +653,22 @@ dislikeButton.addEventListener('click', (event) => {
 
 // Add keyboard controls
 document.addEventListener('keydown', (event) => {
+    // Don't allow keyboard shortcuts when controls are disabled
+    if (dislikeButton.disabled || likeButton.disabled) {
+        return;
+    }
+    
     if (event.key === 'ArrowLeft') {
         showFloatingEmoji('dislike');
         handlePhotoAction('dislike');
     } else if (event.key === 'ArrowRight') {
         showFloatingEmoji('like');
         handlePhotoAction('like');
+    } else if (event.key >= '1' && event.key <= '5') {
+        // Direct rating with number keys 1-5
+        const rating = parseInt(event.key);
+        showFloatingEmoji('rate', rating);
+        handlePhotoAction('rate', rating);
     }
 });
 
@@ -788,10 +950,15 @@ function updatePhotoTransform() {
     }
 }
 
-// Modify the click handler to only work when not zoomed
+// Modify the click handler to only work when not zoomed and controls are enabled
 document.addEventListener('click', (event) => {
     // Skip if we're zoomed in
     if (isZoomed) return;
+    
+    // Skip if controls are disabled (loading state)
+    if (dislikeButton.disabled || likeButton.disabled) {
+        return;
+    }
     
     // Ignore clicks on buttons
     if (event.target.closest('.buttons')) {
@@ -995,3 +1162,10 @@ setInterval(() => {
     const now = Date.now();
     preloadedPhotos = preloadedPhotos.filter(p => p.loaded || !p.timestamp || now - p.timestamp < 10000);
 }, 3000);
+
+// Initialize the app - load the first photo
+console.log('Initializing Photo Sorter app...');
+// Show loading spinner initially until first photo is loaded
+showLoadingSpinner();
+// Load the first photo
+loadRandomPhoto();

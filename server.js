@@ -2,6 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const sqlite3 = require('sqlite3').verbose();
 
 // Precompile regex for image extensions to avoid recompilation on each file check
 const imageExtensions = /\.(jpg|jpeg|png|gif|bmp)$/i;
@@ -11,6 +12,20 @@ const PORT = process.env.PORT || 6900;
 
 // Get base directory from environment or use default
 const baseDir = process.env.PHOTO_BASE_DIR || path.join(__dirname, 'photos');
+
+// Database setup
+const dbPath = path.join(__dirname, 'photos.db');
+const db = new sqlite3.Database(dbPath);
+
+// Initialize database tables
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS photos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        path TEXT NOT NULL,
+        location TEXT NOT NULL,
+        UNIQUE(path, location)
+    )`);
+});
 
 // Define paths to photo directories
 // Now the base directory itself can contain photos to be sorted
@@ -27,15 +42,13 @@ console.log('Using photo directories:', {
     sorted: sortedDirs
 });
 
-// Cache for storing available photos
-const photoCache = {
-    base: [],
-    sorted: {}
-};
-
 // Flag to prevent concurrent cache refreshes
 let isRefreshingCache = false;
 let currentRefreshPromise = null;
+
+// Flag to track if initial background refresh is running
+let isInitialBackgroundRefresh = false;
+let backgroundRefreshPromise = null;
 
 // Function to refresh the photo cache
 async function refreshPhotoCache() {
@@ -48,13 +61,9 @@ async function refreshPhotoCache() {
     // Start the refresh operation
     isRefreshingCache = true;
     currentRefreshPromise = (async () => {
+        const startTime = Date.now();
         try {
-            console.log('Refreshing photo cache...');
-            const startTime = Date.now();
-            
-            // Clear the existing cache
-            photoCache.base = [];
-            photoCache.sorted = {};
+            console.log('Performing incremental photo cache update...');
             
             // Recursively find all photo files in a directory and its subdirectories
             const findPhotosRecursively = async (dir, relativeTo) => {
@@ -62,28 +71,32 @@ async function refreshPhotoCache() {
                 try {
                     const files = await fs.promises.readdir(dir, { withFileTypes: true });
                     
-                    // Process files and subdirectories in parallel
-                    const promises = files.map(async file => {
-                        if (file.name === '@eaDir') return;
-                        const fullPath = path.join(dir, file.name);
+                    // Process files with limited concurrency to avoid overwhelming the system
+                    const concurrencyLimit = 10;
+                    for (let i = 0; i < files.length; i += concurrencyLimit) {
+                        const batch = files.slice(i, i + concurrencyLimit);
+                        const batchPromises = batch.map(async file => {
+                            if (file.name === '@eaDir') return;
+                            const fullPath = path.join(dir, file.name);
+                            
+                            // Skip the 'sorted' directory when scanning the base directory
+                            if (dir === baseDir && file.name === 'sorted') {
+                                return;
+                            }
+                            
+                            if (file.isDirectory()) {
+                                // Recursively search subdirectories
+                                const subPhotos = await findPhotosRecursively(fullPath, relativeTo);
+                                photos.push(...subPhotos);
+                            } else if (file.isFile() && imageExtensions.test(file.name)) {
+                                // Add photo files, preserving relative path from the relative directory
+                                const relativePath = path.relative(relativeTo, fullPath);
+                                photos.push(relativePath);
+                            }
+                        });
                         
-                        // Skip the 'sorted' directory when scanning the base directory
-                        if (dir === baseDir && file.name === 'sorted') {
-                            return;
-                        }
-                        
-                        if (file.isDirectory()) {
-                            // Recursively search subdirectories
-                            const subPhotos = await findPhotosRecursively(fullPath, relativeTo);
-                            photos.push(...subPhotos);
-                        } else if (file.isFile() && imageExtensions.test(file.name)) {
-                            // Add photo files, preserving relative path from the relative directory
-                            const relativePath = path.relative(relativeTo, fullPath);
-                            photos.push(relativePath);
-                        }
-                    });
-                    
-                    await Promise.all(promises);
+                        await Promise.all(batchPromises);
+                    }
                 } catch (err) {
                     console.error(`Error reading directory ${dir}:`, err);
                 }
@@ -91,34 +104,129 @@ async function refreshPhotoCache() {
                 return photos;
             };
             
-            try {
-                // Scan all directories in parallel
-                const scanPromises = [
-                    findPhotosRecursively(baseDir, baseDir),
-                    ...Object.values(sortedDirs).map(dir => findPhotosRecursively(dir, dir))
-                ];
-                
-                const results = await Promise.all(scanPromises);
-                
-                // Assign results to cache
-                photoCache.base = results[0] || [];
-                Object.keys(sortedDirs).forEach((key, index) => {
-                    photoCache.sorted[key] = results[index + 1] || [];
+            // Get current database state
+            const existingPhotos = await new Promise((resolve, reject) => {
+                db.all('SELECT path, location FROM photos', (err, rows) => {
+                    if (err) reject(err);
+                    else resolve(rows || []);
                 });
-                
-                const endTime = Date.now();
-                console.log(`Photo cache refreshed in ${endTime - startTime}ms`);
-                console.log(`Found ${photoCache.base.length} photos in base directory`);
-                Object.keys(photoCache.sorted).forEach(key => {
-                    console.log(`Found ${photoCache.sorted[key].length} photos in sorted/${key}`);
-                });
-                
-                // Calculate and print folder ranks after cache refresh
-                calculateAndPrintFolderRanks();
-            } catch (error) {
-                console.error('Error refreshing photo cache:', error);
+            });
+            
+            // Create a map of existing photos for quick lookup
+            const existingPhotoMap = new Map();
+            existingPhotos.forEach(photo => {
+                existingPhotoMap.set(`${photo.location}:${photo.path}`, true);
+            });
+            
+            // Scan filesystem for current photos
+            const currentBasePhotos = await findPhotosRecursively(baseDir, baseDir);
+            const currentSortedPhotos = {};
+            
+            for (const key of Object.keys(sortedDirs)) {
+                currentSortedPhotos[key] = await findPhotosRecursively(sortedDirs[key], sortedDirs[key]);
             }
+            
+            // Find photos that exist on filesystem but not in database (new photos to add)
+            const photosToAdd = [];
+            
+            // Check base photos
+            currentBasePhotos.forEach(photoPath => {
+                if (!existingPhotoMap.has(`base:${photoPath}`)) {
+                    photosToAdd.push({ path: photoPath, location: 'base' });
+                }
+            });
+            
+            // Check sorted photos
+            Object.keys(sortedDirs).forEach(key => {
+                currentSortedPhotos[key].forEach(photoPath => {
+                    if (!existingPhotoMap.has(`sorted/${key}:${photoPath}`)) {
+                        photosToAdd.push({ path: photoPath, location: `sorted/${key}` });
+                    }
+                });
+            });
+            
+            // Find photos that exist in database but not on filesystem (stale entries to remove)
+            const photosToRemove = [];
+            
+            existingPhotos.forEach(photo => {
+                let stillExists = false;
+                
+                if (photo.location === 'base') {
+                    stillExists = currentBasePhotos.includes(photo.path);
+                } else if (photo.location.startsWith('sorted/')) {
+                    const key = photo.location.split('/')[1];
+                    stillExists = currentSortedPhotos[key] && currentSortedPhotos[key].includes(photo.path);
+                }
+                
+                if (!stillExists) {
+                    photosToRemove.push(photo);
+                }
+            });
+            
+            // Perform database updates
+            console.log(`Adding ${photosToAdd.length} new photos, removing ${photosToRemove.length} stale entries...`);
+            
+            // Add new photos
+            if (photosToAdd.length > 0) {
+                const chunkSize = 2000;
+                for (let i = 0; i < photosToAdd.length; i += chunkSize) {
+                    const chunk = photosToAdd.slice(i, i + chunkSize);
+                    const addPromises = chunk.map(photo =>
+                        new Promise((resolve, reject) => {
+                            if (!photo.path || photo.path.trim() === '') {
+                                console.warn('Skipping photo with empty path:', photo);
+                                resolve();
+                                return;
+                            }
+                            db.run(
+                                'INSERT OR IGNORE INTO photos (path, location) VALUES (?, ?)',
+                                [photo.path, photo.location],
+                                (err) => {
+                                    if (err) reject(err);
+                                    else resolve();
+                                }
+                            );
+                        })
+                    );
+                    await Promise.all(addPromises);
+                }
+                console.log(`Added ${photosToAdd.length} new photos to database`);
+            }
+            
+            // Remove stale photos
+            if (photosToRemove.length > 0) {
+                const chunkSize = 1000;
+                for (let i = 0; i < photosToRemove.length; i += chunkSize) {
+                    const chunk = photosToRemove.slice(i, i + chunkSize);
+                    const removePromises = chunk.map(photo =>
+                        new Promise((resolve, reject) => {
+                            db.run('DELETE FROM photos WHERE path = ? AND location = ?', [photo.path, photo.location], (err) => {
+                                if (err) reject(err);
+                                else resolve();
+                            });
+                        })
+                    );
+                    await Promise.all(removePromises);
+                }
+                console.log(`Removed ${photosToRemove.length} stale photos from database`);
+            }
+            
+            // Log final counts
+            const finalBaseCount = currentBasePhotos.length;
+            console.log(`Base directory: ${finalBaseCount} photos`);
+            Object.keys(sortedDirs).forEach(key => {
+                const sortedCount = currentSortedPhotos[key].length;
+                console.log(`Sorted/${key}: ${sortedCount} photos`);
+            });
+            
+            // Calculate and print folder ranks after cache update
+            calculateAndPrintFolderRanks();
+        } catch (error) {
+            console.error('Error in refreshPhotoCache:', error);
+            // Don't rethrow - just log the error to prevent server crash
         } finally {
+            const endTime = Date.now();
+            console.log(`Photo cache updated in ${endTime - startTime}ms`);
             // Always reset the flag when done
             isRefreshingCache = false;
             currentRefreshPromise = null;
@@ -149,67 +257,86 @@ Object.values(sortedDirs).forEach(dir => ensureDirectoryExists(dir));
 
 // Function to get folder ranks data
 function getFolderRanksData() {
-    // Create a map to store folder information
-    const folderRanks = new Map();
-    
-    // Process photos from all sorted directories
-    Object.keys(photoCache.sorted).forEach(rank => {
-        const rankNum = parseInt(rank);
+    return new Promise((resolve, reject) => {
+        // Create a map to store folder information
+        const folderRanks = new Map();
         
-        photoCache.sorted[rank].forEach(photoPath => {
-            // Extract the folder path from the photo path
-            const folderPath = path.dirname(photoPath);
-            if (folderPath === '.') return; // Skip photos directly in the sorted directory
+        // Query all photos from database
+        db.all('SELECT path, location FROM photos', (err, rows) => {
+            if (err) {
+                console.error('Error querying photos:', err);
+                reject(err);
+                return;
+            }
             
-            // Process the current folder and all parent folders
-            processFolder(folderPath, rankNum, folderRanks);
+            // Process photos from all sorted directories
+            rows.filter(row => row.location.startsWith('sorted/')).forEach(row => {
+                const rankNum = parseInt(row.location.split('/')[1]);
+                
+                const photoPath = row.path;
+                // Extract the folder path from the photo path
+                const folderPath = path.dirname(photoPath);
+                if (folderPath === '.') return; // Skip photos directly in the sorted directory
+                
+                // Process the current folder and all parent folders
+                processFolder(folderPath, rankNum, folderRanks);
+            });
+            
+            // Process photos from base directory to count unsorted photos per folder
+            rows.filter(row => row.location === 'base').forEach(row => {
+                const photoPath = row.path;
+                // Extract the folder path from the photo path
+                const folderPath = path.dirname(photoPath);
+                if (folderPath === '.') return; // Skip photos directly in the base directory
+                
+                // Process the current folder and all parent folders for unsorted photos
+                processUnsortedFolder(folderPath, folderRanks);
+            });
+            
+            // Convert map to array for sorting
+            const sortedFolders = Array.from(folderRanks.entries()).map(([folderPath, data]) => {
+                return {
+                    folderPath,
+                    averageRank: data.count > 0 ? data.totalRank / data.count : 0,
+                    photoCount: data.count,
+                    unsortedCount: data.unsortedCount || 0,
+                    totalPhotos: data.count + (data.unsortedCount || 0),
+                    photosByRank: data.photosByRank,
+                    depth: folderPath.split('/').length // Add depth information
+                };
+            });
+            
+            // Sort folders by average rank (descending) and then by depth (ascending)
+            sortedFolders.sort((a, b) => {
+                // First sort by average rank
+                const rankDiff = b.averageRank - a.averageRank;
+                if (Math.abs(rankDiff) > 0.001) { // Use a small epsilon for floating point comparison
+                    return rankDiff;
+                }
+                // If ranks are equal, sort by depth (shallower folders first)
+                return a.depth - b.depth;
+            });
+            
+            resolve(sortedFolders);
         });
     });
-    
-    // Process photos from base directory to count unsorted photos per folder
-    photoCache.base.forEach(photoPath => {
-        // Extract the folder path from the photo path
-        const folderPath = path.dirname(photoPath);
-        if (folderPath === '.') return; // Skip photos directly in the base directory
-        
-        // Process the current folder and all parent folders for unsorted photos
-        processUnsortedFolder(folderPath, folderRanks);
-    });
-    
-    // Convert map to array for sorting
-    const sortedFolders = Array.from(folderRanks.entries()).map(([folderPath, data]) => {
-        return {
-            folderPath,
-            averageRank: data.count > 0 ? data.totalRank / data.count : 0,
-            photoCount: data.count,
-            unsortedCount: data.unsortedCount || 0,
-            totalPhotos: data.count + (data.unsortedCount || 0),
-            photosByRank: data.photosByRank,
-            depth: folderPath.split('/').length // Add depth information
-        };
-    });
-    
-    // Sort folders by average rank (descending) and then by depth (ascending)
-    sortedFolders.sort((a, b) => {
-        // First sort by average rank
-        const rankDiff = b.averageRank - a.averageRank;
-        if (Math.abs(rankDiff) > 0.001) { // Use a small epsilon for floating point comparison
-            return rankDiff;
-        }
-        // If ranks are equal, sort by depth (shallower folders first)
-        return a.depth - b.depth;
-    });
-    
-    return sortedFolders;
+}
+
+function normalizeFolderPath(folderPath, maxDepth) {
+    if (!folderPath || folderPath === '.') return folderPath;
+    const parts = folderPath.split('/').filter(Boolean);
+    if (parts.length <= maxDepth) return parts.join('/');
+    return parts.slice(0, maxDepth).join('/');
 }
 
 // Helper function to process a folder and all its parent folders for ranked photos
 function processFolder(folderPath, rankNum, folderRanks) {
+    const normalizedFolderPath = normalizeFolderPath(folderPath, 2);
     // Process the current folder
-    updateFolderRank(folderPath, rankNum, folderRanks);
+    updateFolderRank(normalizedFolderPath, rankNum, folderRanks);
     
     // Process all parent folders up to the root
-    let currentPath = folderPath;
+    let currentPath = normalizedFolderPath;
     while (currentPath.includes('/')) {
         currentPath = path.dirname(currentPath);
         if (currentPath === '.') break; // Stop at the root
@@ -240,11 +367,12 @@ function updateFolderRank(folderPath, rankNum, folderRanks) {
 
 // Helper function to process a folder and all its parent folders for unsorted photos
 function processUnsortedFolder(folderPath, folderRanks) {
+    const normalizedFolderPath = normalizeFolderPath(folderPath, 2);
     // Process the current folder
-    updateFolderUnsorted(folderPath, folderRanks);
+    updateFolderUnsorted(normalizedFolderPath, folderRanks);
     
     // Process all parent folders up to the root
-    let currentPath = folderPath;
+    let currentPath = normalizedFolderPath;
     while (currentPath.includes('/')) {
         currentPath = path.dirname(currentPath);
         if (currentPath === '.') break; // Stop at the root
@@ -310,56 +438,79 @@ function writeFolderRankingsToCSV(sortedFolders) {
 }
 
 // Function to calculate and print average folder ranks
-function calculateAndPrintFolderRanks() {
+async function calculateAndPrintFolderRanks() {
     console.log('\nCalculating average folder ranks...');
     
-    // Get folder ranks data
-    const sortedFolders = getFolderRanksData();
-    
-    // Write to CSV file
-    writeFolderRankingsToCSV(sortedFolders);
-    
-    // Print the results
-    console.log('\nFolders sorted by average rank:');
-    console.log('==============================');
-    
-    if (sortedFolders.length === 0) {
-        console.log('No folders with photos found.');
-    } else {
-        sortedFolders.forEach(folder => {
-            if (folder.photoCount === folder.totalPhotos) return;
-            console.log(`Folder: ${folder.folderPath}`);
-            const sortedRatio = folder.photoCount / folder.totalPhotos;
-            console.log(`  Average Rank: ${folder.averageRank.toFixed(2)}, Sorted Photos: ${folder.photoCount} of ${folder.totalPhotos} (${sortedRatio.toFixed(2) * 100}%)`);
-        });
+    try {
+        // Get folder ranks data
+        const sortedFolders = await getFolderRanksData();
+        
+        // Write to CSV file
+        writeFolderRankingsToCSV(sortedFolders);
+        
+        // Print the results
+        console.log('\nFolders sorted by average rank:');
+        console.log('==============================');
+        
+        if (sortedFolders.length === 0) {
+            console.log('No folders with photos found.');
+        } else {
+            sortedFolders.forEach(folder => {
+                if (folder.photoCount === folder.totalPhotos) return;
+                console.log(`Folder: ${folder.folderPath}`);
+                const sortedRatio = folder.photoCount / folder.totalPhotos;
+                console.log(`  Average Rank: ${folder.averageRank.toFixed(2)}, Sorted Photos: ${folder.photoCount} of ${folder.totalPhotos} (${sortedRatio.toFixed(2) * 100}%)`);
+            });
+        }
+        console.log('\n');
+    } catch (error) {
+        console.error('Error calculating folder ranks:', error);
     }
-    console.log('\n');
 }
 
 // Recommend moving remaining low-score folders to sorted/1
 // or high-scoring folders to sorted/4
-function printMassActions() {
-    const sortedFolders = getFolderRanksData();
-    console.log(`Mass action recommendations:`);
-    sortedFolders.forEach(folder => {
-        const sortedRatio = folder.photoCount / folder.totalPhotos;
-        const averageRank = folder.averageRank;
-        if (averageRank < 3 && sortedRatio > 0.2 && sortedRatio < 1.0) {
-            console.log(`target='sorted/1/${folder.folderPath}' ; mkdir -p "$target" ; cp -r '${folder.folderPath}'/* "$target/" && rm -rf '${folder.folderPath}' # average rank ${averageRank}, sorted ${folder.photoCount}/${folder.totalPhotos} (${(sortedRatio * 100).toFixed(2)}%)`);
-        }
-        if (averageRank > 3 && sortedRatio > 0.4 && sortedRatio < 1.0) {
-            console.log(`target='sorted/4/${folder.folderPath}' ; mkdir -p "$target" ; cp -r '${folder.folderPath}'/* "$target/" && rm -rf '${folder.folderPath}' # average rank ${averageRank}, sorted ${folder.photoCount}/${folder.totalPhotos} (${(sortedRatio * 100).toFixed(2)}%)`);
-        }
-    });
+async function printMassActions() {
+    try {
+        const sortedFolders = await getFolderRanksData();
+        console.log(`Mass action recommendations:`);
+        sortedFolders.forEach(folder => {
+            const sortedRatio = folder.photoCount / folder.totalPhotos;
+            const averageRank = folder.averageRank;
+            if (averageRank < 3 && sortedRatio > 0.2 && sortedRatio < 1.0) {
+                console.log(`target='sorted/1/${folder.folderPath}' ; mkdir -p "$target" ; cp -r '${folder.folderPath}'/* "$target/" && rm -rf '${folder.folderPath}' # average rank ${averageRank}, sorted ${folder.photoCount}/${folder.totalPhotos} (${(sortedRatio * 100).toFixed(2)}%)`);
+            }
+            if (averageRank > 3 && sortedRatio > 0.4 && sortedRatio < 1.0) {
+                console.log(`target='sorted/4/${folder.folderPath}' ; mkdir -p "$target" ; cp -r '${folder.folderPath}'/* "$target/" && rm -rf '${folder.folderPath}' # average rank ${averageRank}, sorted ${folder.photoCount}/${folder.totalPhotos} (${(sortedRatio * 100).toFixed(2)}%)`);
+            }
+        });
+    } catch (error) {
+        console.error('Error printing mass actions:', error);
+    }
 }
 
-// Initial cache refresh
+// Initial server startup
 (async () => {
-    await refreshPhotoCache();
-    printMassActions();
-    
+    // Start the server immediately to serve existing database content
     app.listen(PORT, () => {
         console.log(`Server is running on http://localhost:${PORT}`);
+        console.log('Serving photos from existing SQLite database...');
+
+        // Mark that initial background refresh is starting
+        isInitialBackgroundRefresh = true;
+
+        // Create a promise for the background refresh
+        backgroundRefreshPromise = refreshPhotoCache().then(() => {
+            console.log('Initial cache refresh completed');
+            isInitialBackgroundRefresh = false;
+            return printMassActions();
+        }).then(() => {
+            console.log('Mass actions calculated');
+        }).catch((error) => {
+            console.error('Error during background cache refresh:', error);
+            isInitialBackgroundRefresh = false;
+            // Don't throw the error - just log it to prevent server crash
+        });
     });
 })();
 
@@ -379,7 +530,7 @@ function getRandomFile(directory, callback) {
     });
 }
 
-// Function to get a random photo from the cache
+// Function to get a random photo from the database
 function getRandomPhoto() {
     return new Promise(async (resolve, reject) => {
     // Helper function to get a random photo from an array
@@ -404,10 +555,10 @@ function getRandomPhoto() {
         // Define probabilities for each folder (in percentage)
         const probabilities = {
             '1': 0,
-            '2': 10,
-            '3': 60,
-            '4': 20,
-            '5': 10
+            '2': 20,
+            '3': 30,
+            '4': 30,
+            '5': 20
         };
         
         // Generate a random number between 0 and 100
@@ -426,24 +577,111 @@ function getRandomPhoto() {
         return '3';
     }
     
-    // Function to try getting a photo from a specific folder
-    function tryGetPhotoFromFolder(folder, directory) {
-        if (photoCache[folder].length === 0) return null;
-        
-        // Try up to 5 random photos from this folder
-        for (let i = 0; i < 5; i++) {
-            const randomPhoto = getRandomFromArray(photoCache[folder]);
-            if (randomPhoto && verifyPhotoExists(randomPhoto, directory)) {
-                return { photo: randomPhoto, directory };
-            } else if (randomPhoto) {
-                // Remove invalid photo from cache
-                const index = photoCache[folder].indexOf(randomPhoto);
-                if (index !== -1) {
-                    photoCache[folder].splice(index, 1);
+    // Function to try getting a photo from a specific location
+    function tryGetPhotoFromLocation(location) {
+        return new Promise((resolveTry) => {
+            db.all('SELECT path FROM photos WHERE location = ?', [location], (err, rows) => {
+                if (err || rows.length === 0) {
+                    resolveTry(null);
+                    return;
+                }
+                
+                // Try up to 5 random photos from this location
+                for (let i = 0; i < 5; i++) {
+                    const randomRow = getRandomFromArray(rows);
+                    if (!randomRow) continue;
+                    
+                    const photo = randomRow.path;
+                    const directory = location === 'base' ? '' : location;
+                    
+                    if (verifyPhotoExists(photo, directory)) {
+                        resolveTry({ photo, directory });
+                        return;
+                    } else {
+                        // Remove invalid photo from database
+                        db.run('DELETE FROM photos WHERE path = ? AND location = ?', [photo, location]);
+                    }
+                }
+                
+                resolveTry(null);
+            });
+        });
+    }
+    
+    // Function to wait for at least one photo to be indexed into the database
+    function waitForFirstPhoto() {
+        return new Promise((resolve, reject) => {
+            const maxWaitTime = 10000; // 10 seconds max wait
+            const checkInterval = 100; // Check every 100ms
+            let elapsedTime = 0;
+            
+            const checkPhotos = () => {
+                db.get('SELECT COUNT(*) as count FROM photos', (err, row) => {
+                    if (err) {
+                        reject(err);
+                        return;
+                    }
+                    
+                    const count = row.count || 0;
+                    if (count > 0) {
+                        console.log(`First photo indexed after ${elapsedTime}ms (${count} total photos)`);
+                        resolve();
+                        return;
+                    }
+                    
+                    elapsedTime += checkInterval;
+                    if (elapsedTime >= maxWaitTime) {
+                        reject(new Error('Timeout waiting for first photo to be indexed'));
+                        return;
+                    }
+                    
+                    // Continue checking
+                    setTimeout(checkPhotos, checkInterval);
+                });
+            };
+            
+            // Start checking
+            checkPhotos();
+        });
+    }
+    
+    // Helper function to try sources in order
+    async function tryPreferredSources(sources) {
+        for (const source of sources) {
+            if (source === 'base') {
+                const baseResult = await tryGetPhotoFromLocation('base');
+                if (baseResult) return baseResult;
+            } else if (source === 'sorted') {
+                // Try sorted photos using the existing logic
+                const availableFolders = await new Promise((resolveCount) => {
+                    db.all('SELECT DISTINCT location FROM photos WHERE location LIKE "sorted/%"', (err, rows) => {
+                        if (err) {
+                            resolveCount([]);
+                            return;
+                        }
+                        resolveCount(rows.map(row => row.location.split('/')[1]).filter(key => key));
+                    });
+                });
+                
+                if (availableFolders.length > 0) {
+                    // Try to select folders based on probability
+                    const triedFolders = new Set();
+                    while (triedFolders.size < 5 && availableFolders.length > triedFolders.size) {
+                        const selectedFolder = selectFolderByProbability();
+                        
+                        if (triedFolders.has(selectedFolder) || !availableFolders.includes(selectedFolder)) {
+                            triedFolders.add(selectedFolder);
+                            continue;
+                        }
+                        
+                        const sortedResult = await tryGetPhotoFromLocation(`sorted/${selectedFolder}`);
+                        if (sortedResult) return sortedResult;
+                        
+                        triedFolders.add(selectedFolder);
+                    }
                 }
             }
         }
-        
         return null;
     }
     
@@ -451,78 +689,91 @@ function getRandomPhoto() {
         // Decide if we should prefer already-sorted photos (20% chance)
         const preferSorted = Math.random() < 0.20;
         
-        // In 80% of cases, first try to get photos from the base directory cache (unsorted)
-        if (!preferSorted && photoCache.base.length > 0) {
-            const result = tryGetPhotoFromFolder('base', '');
-            if (result) {
-                return resolve({ photo: result.photo, directory: result.directory });
-            }
+        let result = null;
+        
+        // Try preferred source first, then fallback to the other
+        if (preferSorted) {
+            result = await tryPreferredSources(['sorted', 'base']);
+        } else {
+            result = await tryPreferredSources(['base', 'sorted']);
         }
         
-        // If no valid photos in base directory, use probability distribution for sorted folders
-        // Create an array to track which folders we've already tried
-        const triedFolders = new Set();
-        const availableFolders = Object.keys(photoCache.sorted).filter(key => 
-            photoCache.sorted[key].length > 0
-        );
+        if (result) {
+            return resolve({ photo: result.photo, directory: result.directory });
+        }
         
-        // If we have no available folders with photos, refresh and try again
-        if (availableFolders.length === 0) {
+        // Check if we have ANY photos in the database at all
+        const totalPhotos = await new Promise((resolveCount) => {
+            db.get('SELECT COUNT(*) as count FROM photos', (err, row) => {
+                if (err) {
+                    resolveCount(0);
+                    return;
+                }
+                resolveCount(row.count || 0);
+            });
+        });
+        
+        // If database is completely empty, wait for any photo to be indexed
+        if (totalPhotos === 0) {
+            if (isInitialBackgroundRefresh && backgroundRefreshPromise) {
+                console.log('Database is empty, waiting for first photo to be indexed...');
+                const startWait = Date.now();
+                try {
+                    // Wait for at least one photo to appear in database
+                    await waitForFirstPhoto();
+                } catch (error) {
+                    console.error('Waiting for first photo failed:', error);
+                }
+                console.log(`Waited ${Date.now() - startWait}ms for first photo during initial refresh`);
+                // Try again now that at least one photo should be available
+                const retryResult = await tryGetPhotoFromLocation('base');
+                if (retryResult) {
+                    return resolve({ photo: retryResult.photo, directory: retryResult.directory });
+                }
+            } else if (isRefreshingCache && currentRefreshPromise) {
+                console.log('Database is empty, waiting for first photo to be indexed from ongoing refresh...');
+                const startWait = Date.now();
+                try {
+                    // Wait for at least one photo to appear in database
+                    await waitForFirstPhoto();
+                } catch (error) {
+                    console.error('Waiting for first photo failed:', error);
+                }
+                console.log(`Waited ${Date.now() - startWait}ms for first photo during ongoing refresh`);
+                // Try again now that at least one photo should be available
+                const retryResult = await tryGetPhotoFromLocation('base');
+                if (retryResult) {
+                    return resolve({ photo: retryResult.photo, directory: retryResult.directory });
+                }
+            } else {
+                // No refresh running and database is empty, trigger our own refresh
+                console.log('Database is empty, starting refresh and waiting for first photo...');
+                const startWait = Date.now();
+                refreshPhotoCache(); // Start refresh in background
+                
+                try {
+                    // Wait for at least one photo to appear in database
+                    await waitForFirstPhoto();
+                } catch (error) {
+                    console.error('Waiting for first photo failed:', error);
+                }
+                console.log(`Waited ${Date.now() - startWait}ms for first photo during new refresh`);
+                
+                // Try again now that at least one photo should be available
+                const retryResult = await tryGetPhotoFromLocation('base');
+                if (retryResult) {
+                    return resolve({ photo: retryResult.photo, directory: retryResult.directory });
+                }
+            }
+        } else {
+            // Database has photos but they're not valid (stale), trigger refresh
+            console.log('Database has photos but none are valid, triggering refresh');
             await refreshPhotoCache();
             
-            // Try base directory again after refreshing
-            if (photoCache.base.length > 0) {
-                const result = tryGetPhotoFromFolder('base', '');
-                if (result) {
-                    return resolve({ photo: result.photo, directory: result.directory });
-                }
-            }
-        }
-        
-        // Try to select folders based on probability until we find a photo or exhaust all options
-        while (triedFolders.size < 5 && availableFolders.length > triedFolders.size) {
-            const selectedFolder = selectFolderByProbability();
-            
-            // Skip if we've already tried this folder or it has no photos
-            if (triedFolders.has(selectedFolder) || photoCache.sorted[selectedFolder].length === 0) {
-                triedFolders.add(selectedFolder);
-                continue;
-            }
-            
-            // Try to get a photo from the selected folder
-            const randomPhoto = getRandomFromArray(photoCache.sorted[selectedFolder]);
-            if (randomPhoto && verifyPhotoExists(randomPhoto, `sorted/${selectedFolder}`)) {
-                return resolve({ photo: randomPhoto, directory: `sorted/${selectedFolder}` });
-            } else if (randomPhoto) {
-                // Remove invalid photo from cache
-                const index = photoCache.sorted[selectedFolder].indexOf(randomPhoto);
-                if (index !== -1) {
-                    photoCache.sorted[selectedFolder].splice(index, 1);
-                }
-            }
-            
-            triedFolders.add(selectedFolder);
-        }
-        
-        // If we've tried several photos and none exist, refresh the cache if we haven't already
-        if (availableFolders.length > 0) {
-            await refreshPhotoCache();
-            
-            // Try base directory one more time
-            if (photoCache.base.length > 0) {
-                const randomPhoto = getRandomFromArray(photoCache.base);
-                if (randomPhoto && verifyPhotoExists(randomPhoto, '')) {
-                    return resolve({ photo: randomPhoto, directory: '' });
-                }
-            }
-            
-            // Try one more time with probability distribution
-            const selectedFolder = selectFolderByProbability();
-            if (photoCache.sorted[selectedFolder].length > 0) {
-                const randomPhoto = getRandomFromArray(photoCache.sorted[selectedFolder]);
-                if (randomPhoto && verifyPhotoExists(randomPhoto, `sorted/${selectedFolder}`)) {
-                    return resolve({ photo: randomPhoto, directory: `sorted/${selectedFolder}` });
-                }
+            // Try again after refresh
+            const retryResult = await tryGetPhotoFromLocation('base');
+            if (retryResult) {
+                return resolve({ photo: retryResult.photo, directory: retryResult.directory });
             }
         }
         
@@ -600,37 +851,49 @@ app.post('/like', (req, res) => {
             return res.status(500).send('Error moving photo');
         }
         
-        // Update the cache after moving the photo
-        if (!directory || directory === '') {
-            // Remove from base cache
-            const index = photoCache.base.indexOf(photo);
-            if (index !== -1) {
-                photoCache.base.splice(index, 1);
-            }
-            // Add to sorted/4 cache
-            if (!photoCache.sorted['4']) {
-                photoCache.sorted['4'] = [];
-            }
-            photoCache.sorted['4'].push(photo);
-        } else if (directory.includes('sorted')) {
-            // Extract current rank from the directory path
-            const currentRank = parseInt(directory.split('/').pop());
-            if (!isNaN(currentRank)) {
-                // Remove from current sorted cache
-                if (photoCache.sorted[currentRank]) {
-                    const index = photoCache.sorted[currentRank].indexOf(photo);
-                    if (index !== -1) {
-                        photoCache.sorted[currentRank].splice(index, 1);
+        // Update the database after moving the photo sequentially to avoid race conditions
+        (async () => {
+            try {
+                if (!directory || directory === '') {
+                    // Remove from base location
+                    await new Promise((resolve, reject) => {
+                        db.run('DELETE FROM photos WHERE path = ? AND location = ?', [photo, 'base'], (err) => {
+                            if (err) reject(err);
+                            else resolve();
+                        });
+                    });
+                    // Add to sorted/4 location
+                    await new Promise((resolve, reject) => {
+                        db.run('INSERT INTO photos (path, location) VALUES (?, ?)', [photo, 'sorted/4'], (err) => {
+                            if (err) reject(err);
+                            else resolve();
+                        });
+                    });
+                } else if (directory.includes('sorted')) {
+                    // Extract current rank from the directory path
+                    const currentRank = parseInt(directory.split('/').pop());
+                    if (!isNaN(currentRank)) {
+                        // Remove from current sorted location
+                        await new Promise((resolve, reject) => {
+                            db.run('DELETE FROM photos WHERE path = ? AND location = ?', [photo, `sorted/${currentRank}`], (err) => {
+                                if (err) reject(err);
+                                else resolve();
+                            });
+                        });
+                        // Add to new sorted location
+                        const newRank = Math.min(currentRank + 1, 5);
+                        await new Promise((resolve, reject) => {
+                            db.run('INSERT INTO photos (path, location) VALUES (?, ?)', [photo, `sorted/${newRank}`], (err) => {
+                                if (err) reject(err);
+                                else resolve();
+                            });
+                        });
                     }
                 }
-                // Add to new sorted cache
-                const newRank = Math.min(currentRank + 1, 5);
-                if (!photoCache.sorted[newRank]) {
-                    photoCache.sorted[newRank] = [];
-                }
-                photoCache.sorted[newRank].push(photo);
+            } catch (err) {
+                console.error('Error updating database after like:', err);
             }
-        }
+        })();
         
         res.send('Photo liked');
     });
@@ -690,95 +953,250 @@ app.post('/dislike', (req, res) => {
             return res.status(500).send('Error moving photo');
         }
         
-        // Update the cache after moving the photo
-        if (!directory || directory === '') {
-            // Remove from base cache
-            const index = photoCache.base.indexOf(photo);
-            if (index !== -1) {
-                photoCache.base.splice(index, 1);
-            }
-            // Add to sorted/2 cache
-            if (!photoCache.sorted['2']) {
-                photoCache.sorted['2'] = [];
-            }
-            photoCache.sorted['2'].push(photo);
-        } else if (directory.includes('sorted')) {
-            // Extract current rank from the directory path
-            const currentRank = parseInt(directory.split('/').pop());
-            if (!isNaN(currentRank)) {
-                // Remove from current sorted cache
-                if (photoCache.sorted[currentRank]) {
-                    const index = photoCache.sorted[currentRank].indexOf(photo);
-                    if (index !== -1) {
-                        photoCache.sorted[currentRank].splice(index, 1);
+        // Update the database after moving the photo sequentially to avoid race conditions
+        (async () => {
+            try {
+                if (!directory || directory === '') {
+                    // Remove from base location
+                    await new Promise((resolve, reject) => {
+                        db.run('DELETE FROM photos WHERE path = ? AND location = ?', [photo, 'base'], (err) => {
+                            if (err) reject(err);
+                            else resolve();
+                        });
+                    });
+                    // Add to sorted/2 location
+                    await new Promise((resolve, reject) => {
+                        db.run('INSERT INTO photos (path, location) VALUES (?, ?)', [photo, 'sorted/2'], (err) => {
+                            if (err) reject(err);
+                            else resolve();
+                        });
+                    });
+                } else if (directory.includes('sorted')) {
+                    // Extract current rank from the directory path
+                    const currentRank = parseInt(directory.split('/').pop());
+                    if (!isNaN(currentRank)) {
+                        // Remove from current sorted location
+                        await new Promise((resolve, reject) => {
+                            db.run('DELETE FROM photos WHERE path = ? AND location = ?', [photo, `sorted/${currentRank}`], (err) => {
+                                if (err) reject(err);
+                                else resolve();
+                            });
+                        });
+                        // Add to new sorted location
+                        const newRank = Math.max(currentRank - 1, 1);
+                        await new Promise((resolve, reject) => {
+                            db.run('INSERT INTO photos (path, location) VALUES (?, ?)', [photo, `sorted/${newRank}`], (err) => {
+                                if (err) reject(err);
+                                else resolve();
+                            });
+                        });
                     }
                 }
-                // Add to new sorted cache
-                const newRank = Math.max(currentRank - 1, 1);
-                if (!photoCache.sorted[newRank]) {
-                    photoCache.sorted[newRank] = [];
-                }
-                photoCache.sorted[newRank].push(photo);
+            } catch (err) {
+                console.error('Error updating database after dislike:', err);
             }
-        }
+        })();
         
         res.send('Photo disliked');
     });
 });
 
+// Add endpoint for direct rating (1-5)
+app.post('/rate', async (req, res) => {
+    const { photo, directory, rating } = req.body;
+    if (!photo || rating === undefined) {
+        return res.status(400).send('Missing photo or rating');
+    }
+    
+    // Validate rating is between 1 and 5
+    if (rating < 1 || rating > 5 || !Number.isInteger(rating)) {
+        return res.status(400).send('Rating must be an integer between 1 and 5');
+    }
+    
+    // Determine the source directory
+    let sourceDir;
+    if (!directory || directory === '') {
+        sourceDir = baseDir;
+    } else if (directory.includes('sorted')) {
+        sourceDir = path.join(baseDir, directory);
+    } else {
+        return res.status(400).send('Invalid directory');
+    }
+    
+    // Determine the target directory based on the rating
+    let targetDir = sortedDirs[rating];
+    
+    try {
+        // Move the photo from source to target directory
+        const sourcePath = path.join(sourceDir, photo);
+        const targetPath = path.join(targetDir, photo);
+        
+        // Check if source file exists
+        if (!fs.existsSync(sourcePath)) {
+            return res.status(404).send('Source photo not found');
+        }
+        
+        // Ensure target directory exists (including subdirectories)
+        const targetFileDir = path.dirname(targetPath);
+        if (!fs.existsSync(targetFileDir)) {
+            fs.mkdirSync(targetFileDir, { recursive: true });
+        }
+        
+        // Move the file
+        fs.renameSync(sourcePath, targetPath);
+        
+        // Update database
+        if (!directory || directory === '') {
+            // Remove from base location
+            await new Promise((resolve, reject) => {
+                db.run('DELETE FROM photos WHERE path = ? AND location = ?', [photo, 'base'], (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            });
+            // Add to sorted location
+            await new Promise((resolve, reject) => {
+                db.run('INSERT INTO photos (path, location) VALUES (?, ?)', [photo, `sorted/${rating}`], (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            });
+        } else if (directory.includes('sorted')) {
+            // Remove from current sorted location
+            await new Promise((resolve, reject) => {
+                db.run('DELETE FROM photos WHERE path = ? AND location = ?', [photo, directory], (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            });
+            // Add to new sorted location
+            await new Promise((resolve, reject) => {
+                db.run('INSERT INTO photos (path, location) VALUES (?, ?)', [photo, `sorted/${rating}`], (err) => {
+                    if (err) reject(err);
+                    else resolve();
+                });
+            });
+        }
+        
+        console.log(`Rated photo ${photo} as ${rating}`);
+        res.send(`Photo rated as ${rating}`);
+    } catch (error) {
+        console.error('Error rating photo:', error);
+        res.status(500).send('Error rating photo');
+    }
+});
+
 // Add an endpoint to refresh the cache manually
 app.get('/refresh-cache', async (req, res) => {
-    await refreshPhotoCache();
-    
-    // Get folder ranks data for the response
-    const folderRanks = getFolderRanksData();
-    
-    res.json({
-        success: true,
-        basePhotos: photoCache.base.length,
-        sortedPhotos: Object.keys(photoCache.sorted).reduce((total, key) => total + photoCache.sorted[key].length, 0),
-        folderRanks: folderRanks
-    });
+    try {
+        await refreshPhotoCache();
+        
+        // Get folder ranks data for the response
+        const folderRanks = await getFolderRanksData();
+        
+        // Get photo counts from database
+        db.get('SELECT COUNT(*) as baseCount FROM photos WHERE location = "base"', (err, baseRow) => {
+            if (err) {
+                console.error('Error getting base count:', err);
+                return res.status(500).send('Error getting photo counts');
+            }
+            
+            db.get('SELECT COUNT(*) as sortedCount FROM photos WHERE location LIKE "sorted/%"', (err, sortedRow) => {
+                if (err) {
+                    console.error('Error getting sorted count:', err);
+                    return res.status(500).send('Error getting photo counts');
+                }
+                
+                res.json({
+                    success: true,
+                    basePhotos: baseRow.baseCount,
+                    sortedPhotos: sortedRow.sortedCount,
+                    folderRanks: folderRanks
+                });
+            });
+        });
+    } catch (error) {
+        console.error('Error during manual cache refresh:', error);
+        res.status(500).json({ 
+            success: false, 
+            error: 'Cache refresh failed but server is still running' 
+        });
+    }
 });
 
 // Add an endpoint to get folder ranks
-app.get('/folder-ranks', (req, res) => {
-    const folderRanks = getFolderRanksData();
-    res.json(folderRanks);
+app.get('/folder-ranks', async (req, res) => {
+    try {
+        const folderRanks = await getFolderRanksData();
+        res.json(folderRanks);
+    } catch (error) {
+        console.error('Error getting folder ranks:', error);
+        res.status(500).send('Error getting folder ranks');
+    }
+});
+
+// Add an endpoint to get plot data for Plotly
+app.get('/plot-data', async (req, res) => {
+    try {
+        const folderRanks = await getFolderRanksData();
+        
+        // Format data for Plotly scatter plot
+        const plotData = folderRanks.map(folder => ({
+            x: folder.totalPhotos,
+            y: folder.averageRank,
+            text: folder.folderPath,
+            depth: folder.depth
+        }));
+        
+        res.json(plotData);
+    } catch (error) {
+        console.error('Error getting plot data:', error);
+        res.status(500).send('Error getting plot data');
+    }
+});
+
+// Add route to serve the plot page
+app.get('/plot', (req, res) => {
+    res.sendFile(path.join(__dirname, 'plot.html'));
 });
 
 // Add an endpoint to download folder rankings as CSV
-app.get('/download-folder-rankings', (req, res) => {
-    // Get folder ranks data
-    const sortedFolders = getFolderRanksData();
-    
-    // Create CSV content
-    let csvContent = 'Folder,Depth,AverageRank,SortedPhotos,UnsortedPhotos,TotalPhotos,Rank5,Rank4,Rank3,Rank2,Rank1\n';
-    
-    // Add data for each folder
-    sortedFolders.forEach(folder => {
-        const folderPath = folder.folderPath.replace(/,/g, '_'); // Replace commas to avoid CSV issues
-        const depth = folder.depth || folderPath.split('/').length;
-        const averageRank = folder.averageRank.toFixed(2);
-        const sortedPhotos = folder.photoCount;
-        const unsortedPhotos = folder.unsortedCount;
-        const totalPhotos = folder.totalPhotos;
+app.get('/download-folder-rankings', async (req, res) => {
+    try {
+        // Get folder ranks data
+        const sortedFolders = await getFolderRanksData();
         
-        // Get counts for each rank
-        const rank5 = folder.photosByRank[5] || 0;
-        const rank4 = folder.photosByRank[4] || 0;
-        const rank3 = folder.photosByRank[3] || 0;
-        const rank2 = folder.photosByRank[2] || 0;
-        const rank1 = folder.photosByRank[1] || 0;
+        // Create CSV content
+        let csvContent = 'Folder,Depth,AverageRank,SortedPhotos,UnsortedPhotos,TotalPhotos,Rank5,Rank4,Rank3,Rank2,Rank1\n';
         
-        // Add row to CSV
-        csvContent += `${folderPath},${depth},${averageRank},${sortedPhotos},${unsortedPhotos},${totalPhotos},${rank5},${rank4},${rank3},${rank2},${rank1}\n`;
-    });
-    
-    // Set headers for CSV download
-    res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', 'attachment; filename=folder_rankings.csv');
-    
-    // Send the CSV content
-    res.send(csvContent);
+        // Add data for each folder
+        sortedFolders.forEach(folder => {
+            const folderPath = folder.folderPath.replace(/,/g, '_'); // Replace commas to avoid CSV issues
+            const depth = folder.depth || folderPath.split('/').length;
+            const averageRank = folder.averageRank.toFixed(2);
+            const sortedPhotos = folder.photoCount;
+            const unsortedPhotos = folder.unsortedCount;
+            const totalPhotos = folder.totalPhotos;
+            
+            // Get counts for each rank
+            const rank5 = folder.photosByRank[5] || 0;
+            const rank4 = folder.photosByRank[4] || 0;
+            const rank3 = folder.photosByRank[3] || 0;
+            const rank2 = folder.photosByRank[2] || 0;
+            const rank1 = folder.photosByRank[1] || 0;
+            
+            // Add row to CSV
+            csvContent += `${folderPath},${depth},${averageRank},${sortedPhotos},${unsortedPhotos},${totalPhotos},${rank5},${rank4},${rank3},${rank2},${rank1}\n`;
+        });
+        
+        // Set headers for CSV download
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', 'attachment; filename=folder_rankings.csv');
+        
+        // Send the CSV content
+        res.send(csvContent);
+    } catch (error) {
+        console.error('Error downloading folder rankings:', error);
+        res.status(500).send('Error downloading folder rankings');
+    }
 });
