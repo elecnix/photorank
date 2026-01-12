@@ -1,0 +1,167 @@
+## Thumbnail Implementation - Jan 11, 2025
+
+### Problem
+The folder ratings page was displaying full-size thumbnails causing Chrome to run out of memory and crash when viewing folders with many images.
+
+### Solution
+Implemented on-the-fly thumbnail generation with the following features:
+
+1. **Added Sharp dependency** for fast image processing
+2. **Created cache directory structure** using MD5 hash (2-level: aa/bb/)
+   - Each leaf folder holds <100 images even with 1M+ images
+   - Updated .gitignore: Added `thumbnail-cache/` to prevent committing generated thumbnails
+3. **Implemented thumbnail endpoint** (`/thumbnail/*`)
+   - Generates 160x160px JPEG thumbnails at 70% quality (~5-10KB each)
+   - Only generates on first request (on-demand)
+   - Uses mutex pattern to prevent duplicate generation
+   - Serves cached thumbnails on subsequent requests
+4. **Updated API endpoint** `/api/folder-images` to return thumbnail URLs instead of full-size image URLs
+5. **Added comprehensive documentation** in THUMBNAILS.md
+
+### Technical Details
+- MD5 hash of file path determines cache location (not content for performance)
+- Automatic cache directory creation
+- Concurrent request handling prevents race conditions
+- Progressive JPEG output for better loading experience
+
+### Bug Fix
+Fixed issue where cache directories weren't being created properly for nested paths. Updated the `generateThumbnail` function to ensure the output directory exists before attempting to write the thumbnail file.
+
+### Testing
+- Verified Sharp library functionality with test images
+- Confirmed server starts successfully with new implementation
+- Thumbnail cache directory structure created properly
+- Fixed directory creation bug - cache now works correctly
+
+## Image Grid and Modal Viewer - Jan 11, 2025
+
+### New Features
+1. **Image Grid Display**: When a folder contains only images (no subfolders), all images are displayed in a responsive grid layout
+2. **Modal Image Viewer**: Click any thumbnail to open a full-size modal view
+3. **Keyboard Navigation**: 
+   - Right arrow key: navigate to next image
+   - Left arrow key: navigate to previous image
+   - Escape key: close modal
+4. **Image Ordering**: Images are sorted by rating (descending) and then by filename (ascending)
+5. **Modal Features**:
+   - Displays original full-size image
+   - Shows filename, rating, and image counter
+   - Navigation arrows for previous/next
+   - Click outside or press X to close
+
+### Implementation Details
+- Added `/api/folder-images` endpoint support to fetch all images (no limit when limit parameter omitted)
+- Added `/api/original-image` endpoint to get original image URLs for modal viewing
+- Updated SQL query to sort by `rating DESC, path ASC`
+- Added responsive CSS grid for image display
+- Implemented keyboard event listeners for navigation
+- Added modal component with overlay and navigation controls
+
+### UI Enhancements
+- Responsive grid layout adapts to screen size
+- Hover effects on thumbnails
+- Rating badges on thumbnails
+- Smooth transitions and animations
+- Full-screen modal with proper image scaling
+
+## Modal Info Auto-Hide Enhancement - Jan 11, 2025
+
+### New Feature
+- Modal info (filename, rating, image counter) automatically hides after 2 seconds
+- Info reappears when mouse hovers over the modal image
+- Timer resets when navigating between images
+
+### Implementation Details
+- Added `showModalInfo` state to control visibility
+- Added CSS transition for smooth fade in/out effect
+- Mouse event handlers on modal content for hover detection
+- Timer logic in `openModal` and `navigateImage` functions
+
+## Modal Thumbnail Strip - Jan 11, 2025
+
+### New Feature
+- Added thumbnail strip below modal images showing all thumbnails from the current folder
+- Thumbnails are clickable to navigate directly to specific images
+- Active thumbnail is highlighted with blue border
+- Hover effects on thumbnail strip images
+
+### Implementation Details
+- Added `modal-thumbnails` and `modal-thumbnail` CSS classes
+- Positioned thumbnail strip at bottom of modal with scrollable horizontal layout
+- Each thumbnail shows 80x80px preview with hover scaling effect
+- Click handler sets `currentImageIndex` to navigate modal
+- Active thumbnail has `active` class with blue border highlighting
+
+## Auto-Hide Modal Elements - Jan 11, 2025
+
+### New Feature
+- Modal info (filename, rating, counter) and thumbnail strip auto-hide after 2 seconds
+- Elements reappear on mouse hover over modal
+- Timer resets when navigating between images
+
+### Implementation Details
+- Added `showThumbnailStrip` state alongside existing `showModalInfo` state
+- Updated all modal opening/navigation functions to control both elements
+- Added CSS transitions for smooth hide/show animations
+- Hover handlers show both modal info and thumbnail strip
+
+## Thumbnail Caching Headers - Jan 11, 2025
+
+### Performance Optimization
+- Added HTTP cache headers to thumbnail responses for browser caching
+- Thumbnails cached for 1 year since they are immutable once generated
+- Prevents re-requesting same thumbnails during browsing sessions
+
+### Implementation Details
+- Added `Cache-Control: public, max-age=31536000, immutable` header
+- Added `Expires` header set to 1 year from response time
+- Added `ETag` header with MD5 hash of image path for cache validation
+- Headers applied to both existing and newly generated thumbnails
+
+## Keyboard Image Rating - Jan 11, 2025
+
+### New Feature
+- **Up Arrow Key**: Increases image rating (moves to higher rated folder)
+- **Down Arrow Key**: Decreases image rating (moves to lower rated folder)
+- Works in both folder view and modal view
+- Rating changes are immediately reflected in the UI
+
+### Implementation Details
+- Added Up/Down arrow key handlers to existing keyboard event listener
+- Calls existing `/like` and `/dislike` API endpoints
+- Updates local state to reflect rating changes immediately
+- Refreshes folder data to show updated thumbnails and ratings
+- Works for current image in both modal and folder thumbnail views
+
+## LIFO Thumbnail Generation Queue - Jan 11, 2025
+
+### Performance Optimization
+- **Single-threaded processing**: Only one thumbnail generated at a time to prevent resource exhaustion
+- **LIFO (Last In, First Out)**: Most recently requested thumbnails are generated first
+- **Skip existing thumbnails**: No generation for already cached thumbnails
+- **Queue management**: Requests are queued and processed sequentially
+
+### Implementation Details
+- Created `ThumbnailRequest` class to encapsulate generation requests
+- `thumbnailQueue` array manages pending requests (unshift for LIFO)
+- `isProcessingQueue` flag ensures single-threaded processing
+- `queueThumbnailRequest()` adds requests to front of queue
+- `processThumbnailQueue()` processes requests one by one
+- Thumbnail endpoint checks for existing files before queuing
+- Maintains 1-year cache headers for generated thumbnails
+
+## Folder Thumbnail Modal - Jan 11, 2025
+
+### New Feature
+- Clicking any thumbnail in the folder list opens the modal viewer
+- Modal shows all images from that folder including subfolders
+- Images are ordered by rating (highest first), then by filename
+- Keyboard navigation works the same (left/right arrows, Escape)
+
+### Implementation Details
+- Added `/api/folder-images-recursive` endpoint to fetch all images from a folder including subfolders
+- Added `openFolderModal` function to handle folder thumbnail clicks
+- Added `modalImages` and `modalFolder` state to track current modal context
+- Updated modal to use either `modalImages` or `allImages` based on context
+- Updated `navigateImage` to work with both image sources
+- Images include `originalUrl` for direct modal viewing without extra API calls

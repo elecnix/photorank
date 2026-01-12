@@ -3,6 +3,8 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
+const sharp = require('sharp');
+const crypto = require('crypto');
 
 // Precompile regex for image extensions to avoid recompilation on each file check
 const imageExtensions = /\.(jpg|jpeg|png|gif|bmp)$/i;
@@ -12,6 +14,91 @@ const PORT = process.env.PORT || 6900;
 
 // Get base directory from environment or use default
 const baseDir = process.env.PHOTO_BASE_DIR || path.join(__dirname, 'photos');
+
+// Thumbnail cache directory
+const thumbnailCacheDir = process.env.THUMBNAIL_CACHE_DIR || path.join(__dirname, 'thumbnail-cache');
+
+// Helper function to get cache directory structure based on MD5
+function getCachePath(originalPath) {
+    const hash = crypto.createHash('md5').update(originalPath).digest('hex');
+    const first = hash.substring(0, 2);
+    const second = hash.substring(2, 4);
+    return path.join(thumbnailCacheDir, first, second);
+}
+
+// Helper function to get thumbnail file path
+function getThumbnailPath(originalPath) {
+    const hash = crypto.createHash('md5').update(originalPath).digest('hex');
+    const first = hash.substring(0, 2);
+    const second = hash.substring(2, 4);
+    const filename = hash + '.jpg';
+    return path.join(thumbnailCacheDir, first, second, filename);
+}
+
+// Helper function to ensure cache directory exists
+function ensureCacheDirectory(originalPath) {
+    const cacheDir = getCachePath(originalPath);
+    if (!fs.existsSync(cacheDir)) {
+        fs.mkdirSync(cacheDir, { recursive: true });
+    }
+    return cacheDir;
+}
+
+// Map to track ongoing thumbnail generation to prevent duplicates
+const generatingThumbnails = new Map();
+
+// Thumbnail generation queue (LIFO - Last In, First Out)
+let thumbnailQueue = [];
+let isProcessingQueue = false;
+
+class ThumbnailRequest {
+    constructor(inputPath, outputPath, resolve, reject) {
+        this.inputPath = inputPath;
+        this.outputPath = outputPath;
+        this.resolve = resolve;
+        this.reject = reject;
+        this.timestamp = Date.now();
+    }
+}
+
+// Process the next thumbnail in the queue
+async function processThumbnailQueue() {
+    if (isProcessingQueue || thumbnailQueue.length === 0) {
+        return;
+    }
+
+    isProcessingQueue = true;
+
+    while (thumbnailQueue.length > 0) {
+        const request = thumbnailQueue.shift(); // FIFO for processing, but LIFO for adding
+
+        try {
+            console.log(`Processing thumbnail: ${request.outputPath}`);
+            await generateThumbnail(request.inputPath, request.outputPath);
+            request.resolve();
+        } catch (error) {
+            console.error('Error processing thumbnail request:', error);
+            request.reject(error);
+        }
+    }
+
+    isProcessingQueue = false;
+}
+
+// Add thumbnail request to queue (LIFO - add to front)
+function queueThumbnailRequest(inputPath, outputPath) {
+    return new Promise((resolve, reject) => {
+        const request = new ThumbnailRequest(inputPath, outputPath, resolve, reject);
+
+        // Add to front of queue (LIFO)
+        thumbnailQueue.unshift(request);
+
+        console.log(`Queued thumbnail request (LIFO): ${outputPath}, queue length: ${thumbnailQueue.length}`);
+
+        // Start processing if not already processing
+        processThumbnailQueue();
+    });
+}
 
 // Database setup
 const dbPath = path.join(__dirname, 'photos.db');
@@ -254,6 +341,7 @@ function ensureDirectoryExists(dir) {
 // Create necessary directories
 ensureDirectoryExists(baseDir);
 Object.values(sortedDirs).forEach(dir => ensureDirectoryExists(dir));
+ensureDirectoryExists(thumbnailCacheDir);
 
 // Function to get folder ranks data
 function getFolderRanksData() {
@@ -1158,6 +1246,391 @@ app.get('/plot-data', async (req, res) => {
 // Add route to serve the plot page
 app.get('/plot', (req, res) => {
     res.sendFile(path.join(__dirname, 'plot.html'));
+});
+
+// API endpoint for folder ratings with drill-down capability
+app.get('/api/folder-ratings', async (req, res) => {
+    const parentFolder = req.query.folder || '';
+    const startTime = Date.now();
+    
+    try {
+        const results = await new Promise((resolve, reject) => {
+            // Build the SQL query based on whether we're at root or inside a folder
+            let query;
+            let params = [];
+            
+            if (parentFolder === '') {
+                // Root level: get top-level folders
+                query = `
+                    WITH folder_data AS (
+                        SELECT 
+                            CASE 
+                                WHEN instr(path, '/') > 0 THEN substr(path, 1, instr(path, '/') - 1)
+                                ELSE NULL
+                            END as folder,
+                            location,
+                            path
+                        FROM photos
+                        WHERE location LIKE 'sorted/%'
+                    )
+                    SELECT 
+                        folder,
+                        SUM(CASE WHEN location = 'sorted/1' THEN 1 ELSE 0 END) as rank1,
+                        SUM(CASE WHEN location = 'sorted/2' THEN 1 ELSE 0 END) as rank2,
+                        SUM(CASE WHEN location = 'sorted/3' THEN 1 ELSE 0 END) as rank3,
+                        SUM(CASE WHEN location = 'sorted/4' THEN 1 ELSE 0 END) as rank4,
+                        SUM(CASE WHEN location = 'sorted/5' THEN 1 ELSE 0 END) as rank5,
+                        COUNT(*) as total,
+                        ROUND((1.0 * SUM(CASE WHEN location = 'sorted/1' THEN 1 ELSE 0 END) +
+                               2.0 * SUM(CASE WHEN location = 'sorted/2' THEN 1 ELSE 0 END) +
+                               3.0 * SUM(CASE WHEN location = 'sorted/3' THEN 1 ELSE 0 END) +
+                               4.0 * SUM(CASE WHEN location = 'sorted/4' THEN 1 ELSE 0 END) +
+                               5.0 * SUM(CASE WHEN location = 'sorted/5' THEN 1 ELSE 0 END)) / COUNT(*), 2) as avgRating
+                    FROM folder_data
+                    WHERE folder IS NOT NULL
+                    GROUP BY folder
+                    ORDER BY avgRating DESC, total DESC
+                `;
+            } else {
+                // Inside a folder: get subfolders
+                const folderPrefix = parentFolder + '/';
+                const folderPrefixLen = folderPrefix.length;
+                
+                query = `
+                    WITH folder_data AS (
+                        SELECT 
+                            CASE 
+                                WHEN instr(substr(path, ? + 1), '/') > 0 
+                                THEN substr(path, 1, ? + instr(substr(path, ? + 1), '/') - 1)
+                                ELSE NULL
+                            END as folder,
+                            location,
+                            path
+                        FROM photos
+                        WHERE location LIKE 'sorted/%' AND path LIKE ?
+                    )
+                    SELECT 
+                        folder,
+                        SUM(CASE WHEN location = 'sorted/1' THEN 1 ELSE 0 END) as rank1,
+                        SUM(CASE WHEN location = 'sorted/2' THEN 1 ELSE 0 END) as rank2,
+                        SUM(CASE WHEN location = 'sorted/3' THEN 1 ELSE 0 END) as rank3,
+                        SUM(CASE WHEN location = 'sorted/4' THEN 1 ELSE 0 END) as rank4,
+                        SUM(CASE WHEN location = 'sorted/5' THEN 1 ELSE 0 END) as rank5,
+                        COUNT(*) as total,
+                        ROUND((1.0 * SUM(CASE WHEN location = 'sorted/1' THEN 1 ELSE 0 END) +
+                               2.0 * SUM(CASE WHEN location = 'sorted/2' THEN 1 ELSE 0 END) +
+                               3.0 * SUM(CASE WHEN location = 'sorted/3' THEN 1 ELSE 0 END) +
+                               4.0 * SUM(CASE WHEN location = 'sorted/4' THEN 1 ELSE 0 END) +
+                               5.0 * SUM(CASE WHEN location = 'sorted/5' THEN 1 ELSE 0 END)) / COUNT(*), 2) as avgRating
+                    FROM folder_data
+                    WHERE folder IS NOT NULL
+                    GROUP BY folder
+                    ORDER BY avgRating DESC, total DESC
+                `;
+                params = [folderPrefixLen, folderPrefixLen, folderPrefixLen, folderPrefix + '%'];
+            }
+            
+            db.all(query, params, (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows || []);
+            });
+        });
+        
+        const duration = Date.now() - startTime;
+        console.log(`Folder ratings query (folder: "${parentFolder}") took ${duration}ms, returned ${results.length} rows`);
+        
+        res.json({
+            parentFolder,
+            folders: results,
+            queryTime: duration
+        });
+    } catch (error) {
+        console.error('Error getting folder ratings:', error);
+        res.status(500).json({ error: 'Error getting folder ratings' });
+    }
+});
+
+// Thumbnail endpoint - generates and serves thumbnails on-demand using LIFO queue
+app.get('/thumbnail/*', async (req, res) => {
+    try {
+        // Extract the image path from the URL
+        const imagePath = req.params[0];
+        if (!imagePath) {
+            return res.status(400).send('No image path provided');
+        }
+
+        // Validate the image path to prevent directory traversal
+        if (imagePath.includes('..') || imagePath.includes('\\')) {
+            return res.status(400).send('Invalid image path');
+        }
+
+        // Construct the full path to the original image
+        const fullPath = path.join(baseDir, imagePath);
+
+        // Check if the original image exists
+        if (!fs.existsSync(fullPath)) {
+            return res.status(404).send('Image not found');
+        }
+
+        // Get the thumbnail path
+        const thumbnailPath = getThumbnailPath(imagePath);
+
+        // If thumbnail already exists, serve it immediately
+        if (fs.existsSync(thumbnailPath)) {
+            // Set cache headers for immutable thumbnails (1 year cache)
+            res.set({
+                'Cache-Control': 'public, max-age=31536000, immutable',
+                'Expires': new Date(Date.now() + 31536000000).toUTCString(), // 1 year from now
+                'ETag': `"thumb-${crypto.createHash('md5').update(imagePath).digest('hex')}"`
+            });
+            return res.sendFile(thumbnailPath);
+        }
+
+        // Thumbnail doesn't exist, queue it for generation
+        try {
+            await queueThumbnailRequest(fullPath, thumbnailPath);
+
+            // After generation, serve the thumbnail with cache headers
+            res.set({
+                'Cache-Control': 'public, max-age=31536000, immutable',
+                'Expires': new Date(Date.now() + 31536000000).toUTCString(), // 1 year from now
+                'ETag': `"thumb-${crypto.createHash('md5').update(imagePath).digest('hex')}"`
+            });
+            res.sendFile(thumbnailPath);
+        } catch (error) {
+            console.error('Error queuing thumbnail request:', error);
+            res.status(500).send('Error generating thumbnail');
+        }
+
+    } catch (error) {
+        console.error('Error serving thumbnail:', error);
+        res.status(500).send('Error generating thumbnail');
+    }
+});
+
+// Function to generate a thumbnail
+async function generateThumbnail(inputPath, outputPath) {
+    try {
+        // Ensure the cache directory exists for the output path
+        const outputDir = path.dirname(outputPath);
+        if (!fs.existsSync(outputDir)) {
+            fs.mkdirSync(outputDir, { recursive: true });
+        }
+
+        // Generate thumbnail using sharp
+        await sharp(inputPath)
+            .resize(160, 160, { 
+                fit: 'cover',
+                position: 'center'
+            })
+            .jpeg({ 
+                quality: 70,
+                progressive: true
+            })
+            .toFile(outputPath);
+
+        console.log(`Generated thumbnail: ${outputPath}`);
+    } catch (error) {
+        console.error('Error generating thumbnail:', error);
+        throw error;
+    }
+}
+
+// API endpoint to get top images for a folder
+app.get('/api/folder-images', async (req, res) => {
+    const folder = req.query.folder || '';
+    const limit = req.query.limit ? parseInt(req.query.limit) : null; // null means get all images
+    
+    if (!folder) {
+        return res.status(400).json({ error: 'Folder parameter required' });
+    }
+    
+    try {
+        const images = await new Promise((resolve, reject) => {
+            // Get images from this exact folder (not subfolders), ordered by rating (highest first)
+            const query = `
+                SELECT path, location,
+                    CASE location
+                        WHEN 'sorted/5' THEN 5
+                        WHEN 'sorted/4' THEN 4
+                        WHEN 'sorted/3' THEN 3
+                        WHEN 'sorted/2' THEN 2
+                        WHEN 'sorted/1' THEN 1
+                        ELSE 0
+                    END as rating
+                FROM photos
+                WHERE location LIKE 'sorted/%' 
+                    AND path LIKE ?
+                    AND (
+                        path = ? 
+                        OR (path LIKE ? AND instr(substr(path, ?), '/') = 0)
+                    )
+                ORDER BY rating DESC, path ASC
+                ${limit ? 'LIMIT ?' : ''}
+            `;
+            
+            const folderPrefix = folder + '/';
+            const prefixLen = folderPrefix.length + 1;
+            
+            const params = [folderPrefix + '%', folder, folderPrefix + '%', prefixLen];
+            if (limit) params.push(limit);
+            
+            db.all(query, params, (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows || []);
+            });
+        });
+        
+        // Build image URLs with thumbnail paths
+        const imageUrls = images.map(img => ({
+            url: `/thumbnail/${img.location}/${img.path}`,
+            originalUrl: `/photos/${img.location}/${img.path}`,
+            rating: img.rating,
+            filename: path.basename(img.path)
+        }));
+        
+        res.json({ folder, images: imageUrls });
+    } catch (error) {
+        console.error('Error getting folder images:', error);
+        res.status(500).json({ error: 'Error getting folder images' });
+    }
+});
+
+// API endpoint to get all images from a folder including subfolders
+app.get('/api/folder-images-recursive', async (req, res) => {
+    const folder = req.query.folder || '';
+    const limit = req.query.limit ? parseInt(req.query.limit) : null;
+    
+    if (!folder) {
+        return res.status(400).json({ error: 'Folder parameter required' });
+    }
+    
+    try {
+        const images = await new Promise((resolve, reject) => {
+            const query = `
+                SELECT path, location,
+                    CASE location
+                        WHEN 'sorted/5' THEN 5
+                        WHEN 'sorted/4' THEN 4
+                        WHEN 'sorted/3' THEN 3
+                        WHEN 'sorted/2' THEN 2
+                        WHEN 'sorted/1' THEN 1
+                        ELSE 0
+                    END as rating
+                FROM photos
+                WHERE location LIKE 'sorted/%' 
+                    AND path LIKE ?
+                ORDER BY rating DESC, path ASC
+                ${limit ? 'LIMIT ?' : ''}
+            `;
+            
+            const folderPrefix = folder + '/';
+            const params = [folderPrefix + '%'];
+            if (limit) params.push(limit);
+            
+            db.all(query, params, (err, rows) => {
+                if (err) reject(err);
+                else resolve(rows || []);
+            });
+        });
+        
+        // Build image URLs with thumbnail paths
+        const imageUrls = images.map(img => ({
+            url: `/thumbnail/${img.location}/${img.path}`,
+            originalUrl: `/photos/${img.location}/${img.path}`,
+            rating: img.rating,
+            filename: path.basename(img.path),
+            path: img.path,
+            location: img.location
+        }));
+        
+        res.json({ folder, images: imageUrls });
+    } catch (error) {
+        console.error('Error getting folder images recursive:', error);
+        res.status(500).json({ error: 'Error getting folder images' });
+    }
+});
+
+// API endpoint to get original image URL
+app.get('/api/original-image', async (req, res) => {
+    const folder = req.query.folder || '';
+    const filename = req.query.filename || '';
+    
+    if (!folder || !filename) {
+        return res.status(400).json({ error: 'Folder and filename parameters required' });
+    }
+    
+    try {
+        // Find the image in the database to get its location
+        const image = await new Promise((resolve, reject) => {
+            const query = `
+                SELECT location, path
+                FROM photos
+                WHERE location LIKE 'sorted/%' 
+                    AND path LIKE ?
+                    AND path LIKE ?
+            `;
+            
+            const folderPrefix = folder + '/';
+            db.get(query, [folderPrefix + '%', '%' + filename], (err, row) => {
+                if (err) reject(err);
+                else resolve(row);
+            });
+        });
+        
+        if (!image) {
+            return res.status(404).json({ error: 'Image not found' });
+        }
+        
+        // Return the original image URL
+        res.json({
+            url: `/photos/${image.location}/${image.path}`,
+            filename: path.basename(image.path)
+        });
+    } catch (error) {
+        console.error('Error getting original image:', error);
+        res.status(500).json({ error: 'Error getting original image' });
+    }
+});
+
+// Check if a folder has direct images (not in subfolders)
+app.get('/api/folder-has-images', async (req, res) => {
+    const folder = req.query.folder || '';
+    
+    if (!folder) {
+        return res.status(400).json({ error: 'Folder parameter required' });
+    }
+    
+    try {
+        const hasImages = await new Promise((resolve, reject) => {
+            const query = `
+                SELECT COUNT(*) as count
+                FROM photos
+                WHERE location LIKE 'sorted/%' 
+                    AND path LIKE ?
+                    AND instr(substr(path, ?), '/') = 0
+                LIMIT 1
+            `;
+            
+            const folderPrefix = folder + '/';
+            const prefixLen = folderPrefix.length + 1;
+            
+            db.get(query, [folderPrefix + '%', prefixLen], (err, row) => {
+                if (err) reject(err);
+                else resolve(row && row.count > 0);
+            });
+        });
+        
+        res.json({ folder, hasImages });
+    } catch (error) {
+        console.error('Error checking folder images:', error);
+        res.status(500).json({ error: 'Error checking folder images' });
+    }
+});
+
+// Serve the folder ratings page
+app.get('/folders', (req, res) => {
+    res.sendFile(path.join(__dirname, 'folders.html'));
 });
 
 // Add an endpoint to download folder rankings as CSV

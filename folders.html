@@ -1,0 +1,1122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Folder Ratings - PhotoRank</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script>
+        // Make React hooks available globally
+        window.React = React;
+        window.useState = React.useState;
+        window.useEffect = React.useEffect;
+        window.useCallback = React.useCallback;
+        window.useRef = React.useRef;
+    </script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid #333;
+        }
+
+        h1 {
+            font-size: 1.8rem;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .nav-link {
+            color: #667eea;
+            text-decoration: none;
+            font-size: 0.9rem;
+        }
+
+        .nav-link:hover {
+            text-decoration: underline;
+        }
+
+        .breadcrumb {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            align-items: center;
+            margin-bottom: 20px;
+            font-size: 0.9rem;
+        }
+
+        .breadcrumb-item {
+            color: #888;
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+
+        .breadcrumb-item:hover {
+            color: #667eea;
+        }
+
+        .breadcrumb-separator {
+            color: #555;
+        }
+
+        .breadcrumb-current {
+            color: #e0e0e0;
+            font-weight: 500;
+        }
+
+        .stats {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 20px;
+            font-size: 0.85rem;
+            color: #888;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 60px 20px;
+            color: #888;
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #333;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 15px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .folder-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .folder-row {
+            background: rgba(255, 255, 255, 0.03);
+            border-radius: 8px;
+            padding: 12px 16px;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 1px solid transparent;
+        }
+
+        .folder-row:hover {
+            background: rgba(255, 255, 255, 0.06);
+            border-color: #333;
+        }
+
+        .folder-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 8px;
+        }
+
+        .folder-icon {
+            font-size: 1.2rem;
+        }
+
+        .folder-name {
+            flex: 1;
+            font-weight: 500;
+            font-size: 0.95rem;
+            word-break: break-word;
+        }
+
+        .folder-stats {
+            display: flex;
+            gap: 16px;
+            font-size: 0.8rem;
+            color: #888;
+        }
+
+        .folder-rating {
+            color: #ffc107;
+            font-weight: 600;
+        }
+
+        .bar-container {
+            height: 24px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 4px;
+            overflow: hidden;
+            display: flex;
+        }
+
+        .bar-segment {
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            font-weight: 500;
+            color: rgba(255, 255, 255, 0.9);
+            min-width: 0;
+            transition: width 0.3s ease;
+        }
+
+        .bar-segment.rank5 { background: #4caf50; }
+        .bar-segment.rank4 { background: #8bc34a; }
+        .bar-segment.rank3 { background: #ffc107; }
+        .bar-segment.rank2 { background: #ff9800; }
+        .bar-segment.rank1 { background: #f44336; }
+
+        .bar-label {
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            padding: 0 4px;
+        }
+
+        .thumbnails {
+            display: flex;
+            gap: 8px;
+            margin-top: 12px;
+            overflow-x: auto;
+            padding-bottom: 4px;
+        }
+
+        .thumbnail {
+            width: 80px;
+            height: 80px;
+            object-fit: cover;
+            border-radius: 4px;
+            flex-shrink: 0;
+            border: 2px solid transparent;
+            transition: border-color 0.2s;
+        }
+
+        .thumbnail:hover {
+            border-color: #667eea;
+        }
+
+        .thumbnail.rating-5 { border-color: #4caf50; }
+        .thumbnail.rating-4 { border-color: #8bc34a; }
+
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+
+        .empty-state-icon {
+            font-size: 3rem;
+            margin-bottom: 15px;
+        }
+
+        .error {
+            text-align: center;
+            padding: 40px 20px;
+            color: #f44336;
+        }
+
+        .legend {
+            display: flex;
+            gap: 16px;
+            justify-content: center;
+            margin-bottom: 20px;
+            font-size: 0.8rem;
+            flex-wrap: wrap;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .legend-color {
+            width: 14px;
+            height: 14px;
+            border-radius: 3px;
+        }
+
+        .legend-color.rank5 { background: #4caf50; }
+        .legend-color.rank4 { background: #8bc34a; }
+        .legend-color.rank3 { background: #ffc107; }
+        .legend-color.rank2 { background: #ff9800; }
+        .legend-color.rank1 { background: #f44336; }
+
+        /* Image grid styles */
+        .image-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 15px;
+            padding: 20px 0;
+        }
+
+        .image-grid-item {
+            position: relative;
+            cursor: pointer;
+            border-radius: 8px;
+            overflow: hidden;
+            background: rgba(255, 255, 255, 0.03);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .image-grid-item:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .image-grid-thumbnail {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+            display: block;
+        }
+
+        .image-grid-rating {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            background: rgba(0, 0, 0, 0.7);
+            color: white;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+
+        /* Modal styles */
+        .modal {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100vw !important;
+            height: 100vh !important;
+            background: rgba(0, 0, 0, 0.95) !important;
+            z-index: 10000 !important;
+        }
+
+        .modal-close {
+            position: absolute !important;
+            top: 20px !important;
+            right: 20px !important;
+            color: white !important;
+            font-size: 40px !important;
+            cursor: pointer !important;
+            user-select: none !important;
+            z-index: 10001 !important;
+        }
+
+        .modal-close:hover {
+            color: #667eea !important;
+        }
+
+        .modal-nav {
+            position: absolute !important;
+            top: 50% !important;
+            transform: translateY(-50%) !important;
+            color: white !important;
+            font-size: 60px !important;
+            cursor: pointer !important;
+            user-select: none !important;
+            opacity: 0.7 !important;
+            transition: opacity 0.3s !important;
+            z-index: 10001 !important;
+        }
+
+        .modal-nav:hover {
+            opacity: 1 !important;
+        }
+
+        .modal-prev {
+            left: 20px !important;
+        }
+
+        .modal-next {
+            right: 20px !important;
+        }
+
+        .modal-content {
+            position: absolute !important;
+            top: 50% !important;
+            left: 50% !important;
+            transform: translate(-50%, -50%) !important;
+            z-index: 10001 !important;
+        }
+
+        .modal-image {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+
+        .modal-info.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        /* Modal thumbnail strip */
+        .modal-thumbnails {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 10px;
+            max-height: 120px;
+            overflow-x: auto;
+            overflow-y: hidden;
+            white-space: nowrap;
+        }
+
+        .modal-thumbnail {
+            display: inline-block;
+            width: 80px;
+            height: 80px;
+            margin: 0 2px;
+            border: 3px solid transparent;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: border-color 0.2s, transform 0.2s;
+            object-fit: cover;
+        }
+
+        .modal-thumbnail:hover {
+            transform: scale(1.1);
+            border-color: #667eea;
+        }
+
+        .modal-thumbnail.active {
+            border-color: #667eea;
+        }
+
+        .modal-thumbnails.hidden {
+            opacity: 0;
+            pointer-events: none;
+            transform: translateY(100%);
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback } = React;
+
+        function FolderRatings() {
+            const [folderPath, setFolderPath] = useState([]);
+            const [folders, setFolders] = useState([]);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [queryTime, setQueryTime] = useState(0);
+            const [folderImages, setFolderImages] = useState({});
+            const [allImages, setAllImages] = useState([]);
+            const [currentImageIndex, setCurrentImageIndex] = useState(0);
+            const [showModal, setShowModal] = useState(false);
+            const [originalImageUrl, setOriginalImageUrl] = useState('');
+            const [showModalInfo, setShowModalInfo] = useState(true);
+            const [modalImages, setModalImages] = useState([]);
+            const [modalFolder, setModalFolder] = useState('');
+            const [showThumbnailStrip, setShowThumbnailStrip] = useState(true);
+
+            // Use ref to track modal state for keyboard handler
+            const modalStateRef = useRef({
+                showModal: false,
+                modalImages: [],
+                allImages: []
+            });
+
+            // Update ref whenever modal state changes
+            useEffect(() => {
+                modalStateRef.current = {
+                    showModal,
+                    modalImages,
+                    allImages
+                };
+            }, [showModal, modalImages, allImages]);
+
+            const currentFolder = folderPath.join('/');
+
+            const fetchFolders = useCallback(async () => {
+                setLoading(true);
+                setError(null);
+                try {
+                    const params = new URLSearchParams();
+                    if (currentFolder) {
+                        params.set('folder', currentFolder);
+                    }
+                    const response = await fetch(`/api/folder-ratings?${params}`);
+                    if (!response.ok) throw new Error('Failed to fetch folder ratings');
+                    const data = await response.json();
+                    setFolders(data.folders);
+                    setQueryTime(data.queryTime);
+                    setFolderImages({});
+                    
+                    // If no subfolders, fetch all images for this folder
+                    if (data.folders.length === 0 && currentFolder) {
+                        fetchAllImages(currentFolder);
+                    } else {
+                        setAllImages([]);
+                    }
+                } catch (err) {
+                    setError(err.message);
+                } finally {
+                    setLoading(false);
+                }
+            }, [currentFolder]);
+
+            useEffect(() => {
+                fetchFolders();
+            }, [fetchFolders]);
+
+            const fetchImagesForFolder = async (folderName) => {
+                if (folderImages[folderName]) return;
+                
+                try {
+                    const response = await fetch(`/api/folder-images?folder=${encodeURIComponent(folderName)}&limit=15`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        setFolderImages(prev => ({
+                            ...prev,
+                            [folderName]: data.images
+                        }));
+                    }
+                } catch (err) {
+                    console.error('Error fetching images for folder:', folderName, err);
+                }
+            };
+
+            const handleFolderClick = (folder) => {
+                const folderName = folder.folder;
+                const parts = folderName.split('/');
+                setFolderPath(parts);
+                // Update browser history
+                const url = parts.length > 0 ? `/folders?path=${encodeURIComponent(parts.join('/'))}` : '/folders';
+                window.history.pushState({ path: parts }, '', url);
+            };
+
+            const handleBreadcrumbClick = (index) => {
+                const newPath = folderPath.slice(0, index);
+                setFolderPath(newPath);
+                // Update browser history
+                const url = newPath.length > 0 ? `/folders?path=${encodeURIComponent(newPath.join('/'))}` : '/folders';
+                window.history.pushState({ path: newPath }, '', url);
+            };
+
+            // Handle browser back/forward buttons
+            useEffect(() => {
+                const handlePopState = (event) => {
+                    if (event.state && event.state.path) {
+                        setFolderPath(event.state.path);
+                    } else {
+                        setFolderPath([]);
+                    }
+                };
+
+                window.addEventListener('popstate', handlePopState);
+                return () => window.removeEventListener('popstate', handlePopState);
+            }, []);
+
+            // Initialize from URL on mount
+            useEffect(() => {
+                const urlParams = new URLSearchParams(window.location.search);
+                const path = urlParams.get('path');
+                if (path) {
+                    setFolderPath(path.split('/'));
+                }
+            }, []);
+
+            const getFolderDisplayName = (fullPath) => {
+                const parts = fullPath.split('/');
+                return parts[parts.length - 1];
+            };
+
+            const calculateBarWidths = (folder) => {
+                const total = folder.total;
+                if (total === 0) return { rank1: 0, rank2: 0, rank3: 0, rank4: 0, rank5: 0 };
+                return {
+                    rank1: (folder.rank1 / total) * 100,
+                    rank2: (folder.rank2 / total) * 100,
+                    rank3: (folder.rank3 / total) * 100,
+                    rank4: (folder.rank4 / total) * 100,
+                    rank5: (folder.rank5 / total) * 100,
+                };
+            };
+
+            const fetchAllImages = async (folder) => {
+                try {
+                    const response = await fetch(`/api/folder-images?folder=${encodeURIComponent(folder)}`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        setAllImages(data.images);
+                    }
+                } catch (err) {
+                    console.error('Error fetching all images:', err);
+                }
+            };
+
+            const openModal = async (index) => {
+                setCurrentImageIndex(index);
+                setShowModal(true);
+                setShowModalInfo(true);
+                document.body.style.overflow = 'hidden';
+                
+                // Save modal state to localStorage
+                const modalState = {
+                    showModal: true,
+                    currentImageIndex: index,
+                    modalImages: modalImages.length > 0 ? modalImages : allImages, // Save current images
+                    modalFolder: modalFolder,
+                    folderPath: folderPath,
+                    timestamp: Date.now()
+                };
+                localStorage.setItem('modalState', JSON.stringify(modalState));
+                
+                // Use modalImages if set (from folder thumbnail click), otherwise use allImages
+                const images = modalImages.length > 0 ? modalImages : allImages;
+                const image = images[index];
+                
+                // Use originalUrl if available, otherwise fetch it
+                if (image.originalUrl) {
+                    setOriginalImageUrl(image.originalUrl);
+                } else {
+                    try {
+                        const folder = modalFolder || currentFolder;
+                        const response = await fetch(`/api/original-image?folder=${encodeURIComponent(folder)}&filename=${encodeURIComponent(image.filename)}`);
+                        if (response.ok) {
+                            const data = await response.json();
+                            setOriginalImageUrl(data.url);
+                        }
+                    } catch (err) {
+                        console.error('Error fetching original image:', err);
+                    }
+                }
+                
+                // Hide modal info and thumbnail strip after 2 seconds
+                setTimeout(() => {
+                    setShowModalInfo(false);
+                    setShowThumbnailStrip(false);
+                }, 2000);
+            };
+
+            const openFolderModal = async (folderName, imageIndex) => {
+                try {
+                    // Fetch all images from this folder recursively
+                    const response = await fetch(`/api/folder-images-recursive?folder=${encodeURIComponent(folderName)}`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.images.length > 0) {
+                            setModalImages(data.images);
+                            setModalFolder(folderName);
+                            setCurrentImageIndex(imageIndex);
+                            setShowModal(true);
+                            setShowModalInfo(true);
+                            setShowThumbnailStrip(true);
+                            document.body.style.overflow = 'hidden';
+                            
+                            // Save modal state to localStorage
+                            const modalState = {
+                                showModal: true,
+                                currentImageIndex: imageIndex,
+                                modalImages: data.images,
+                                modalFolder: folderName,
+                                folderPath: folderPath,
+                                timestamp: Date.now()
+                            };
+                            localStorage.setItem('modalState', JSON.stringify(modalState));
+                            
+                            // Set original image URL directly
+                            setOriginalImageUrl(data.images[imageIndex].originalUrl);
+                            
+                            // Hide modal info and thumbnail strip after 2 seconds
+                            setTimeout(() => {
+                                setShowModalInfo(false);
+                                setShowThumbnailStrip(false);
+                            }, 2000);
+                        }
+                    }
+                } catch (err) {
+                    console.error('Error fetching folder images:', err);
+                }
+            };
+
+            // Restore modal state from localStorage on mount
+            useEffect(() => {
+                const savedModalState = localStorage.getItem('modalState');
+                if (savedModalState) {
+                    try {
+                        const modalState = JSON.parse(savedModalState);
+                        
+                        // Only restore if it's recent (within last 5 minutes to avoid stale state)
+                        const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+                        if (modalState.timestamp > fiveMinutesAgo) {
+                            console.log('Restoring modal state:', modalState);
+                            
+                            // Restore folder path first
+                            if (modalState.folderPath && modalState.folderPath.length > 0) {
+                                setFolderPath(modalState.folderPath);
+                            }
+                            
+                            // Restore modal state
+                            setCurrentImageIndex(modalState.currentImageIndex);
+                            setModalImages(modalState.modalImages || []);
+                            setModalFolder(modalState.modalFolder || '');
+                            setShowModal(true);
+                            setShowModalInfo(true);
+                            setShowThumbnailStrip(true);
+                            document.body.style.overflow = 'hidden';
+                            
+                            // Set original image URL if we have modal images
+                            if (modalState.modalImages && modalState.modalImages.length > 0) {
+                                const currentImage = modalState.modalImages[modalState.currentImageIndex];
+                                if (currentImage && currentImage.originalUrl) {
+                                    setOriginalImageUrl(currentImage.originalUrl);
+                                }
+                            }
+                            
+                            // Clear the saved state after restoration
+                            localStorage.removeItem('modalState');
+                        } else {
+                            // Stale state, remove it
+                            localStorage.removeItem('modalState');
+                        }
+                    } catch (error) {
+                        console.error('Error restoring modal state:', error);
+                        localStorage.removeItem('modalState');
+                    }
+                }
+            }, []);
+
+            const navigateImage = useCallback((direction) => {
+                const images = modalImages.length > 0 ? modalImages : allImages;
+                const len = images.length;
+                
+                let newIndex;
+                if (direction === 'next') {
+                    newIndex = (currentImageIndex + 1) % len;
+                } else {
+                    newIndex = (currentImageIndex - 1 + len) % len;
+                }
+                
+                setCurrentImageIndex(newIndex);
+                
+                // Set original image URL directly if available
+                if (images[newIndex]?.originalUrl) {
+                    setOriginalImageUrl(images[newIndex].originalUrl);
+                }
+            }, [modalImages, allImages, currentImageIndex]);
+
+            useEffect(() => {
+                folders.forEach(folder => {
+                    fetchImagesForFolder(folder.folder);
+                });
+            }, [folders]);
+
+            useEffect(() => {
+                const handleKeyDown = (e) => {
+                    if (showModal) {
+                        if (e.key === 'ArrowRight') {
+                            e.preventDefault();
+                            navigateImage('next');
+                        } else if (e.key === 'ArrowLeft') {
+                            e.preventDefault();
+                            navigateImage('prev');
+                        } else if (e.key === 'Escape') {
+                            e.preventDefault();
+                            closeModal();
+                        } else if (e.key === 'ArrowUp') {
+                            e.preventDefault();
+                            rateCurrentImage('up');
+                        } else if (e.key === 'ArrowDown') {
+                            e.preventDefault();
+                            rateCurrentImage('down');
+                        }
+                    } else {
+                        // When not in modal, Escape navigates to parent folder
+                        if (e.key === 'Escape' && folderPath.length > 0) {
+                            handleBreadcrumbClick(folderPath.length - 1);
+                        }
+                    }
+                };
+
+                document.addEventListener('keydown', handleKeyDown);
+                return () => document.removeEventListener('keydown', handleKeyDown);
+            }, [showModal, folderPath, navigateImage, closeModal, rateCurrentImage]);
+
+            // Fetch original image when current image index changes
+            useEffect(() => {
+                const images = modalImages.length > 0 ? modalImages : allImages;
+                if (showModal && images.length > 0) {
+                    const image = images[currentImageIndex];
+                }
+            }, [showModal, currentImageIndex, modalImages, allImages, currentFolder, modalFolder]);
+
+            const closeModal = useCallback(() => {
+                setShowModal(false);
+                setModalImages([]);
+                setModalFolder('');
+                document.body.style.overflow = 'auto';
+                // Clear modal state from localStorage
+                localStorage.removeItem('modalState');
+            }, []);
+
+            const rateCurrentImage = useCallback(async (direction) => {
+                const images = modalImages.length > 0 ? modalImages : allImages;
+                if (images.length === 0) return;
+                
+                const currentImage = images[currentImageIndex];
+                if (!currentImage) return;
+
+                try {
+                    // Call the rating API
+                    const endpoint = direction === 'up' ? '/like' : '/dislike';
+                    
+                    // Handle different image data structures
+                    let requestBody;
+                    if (modalImages.length > 0) {
+                        // Modal images have path and location
+                        requestBody = {
+                            photo: currentImage.path,
+                            directory: currentImage.location
+                        };
+                    } else {
+                        // Folder images need to construct path and directory from current folder
+                        requestBody = {
+                            photo: currentImage.filename,
+                            directory: `sorted/${currentImage.rating}`
+                        };
+                    }
+                    
+                    const response = await fetch(endpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify(requestBody)
+                    });
+                    
+                    if (response.ok) {
+                        // Refresh the current folder data to reflect rating changes
+                        fetchFolders();
+                        
+                        // If we're in modal mode, update the image rating in our local state
+                        if (showModal) {
+                            const newRating = direction === 'up' 
+                                ? Math.min(5, currentImage.rating + 1) 
+                                : Math.max(1, currentImage.rating - 1);
+                            
+                            // Update the modal images array with new rating
+                            if (modalImages.length > 0) {
+                                const updatedImages = [...modalImages];
+                                updatedImages[currentImageIndex] = { ...currentImage, rating: newRating };
+                                setModalImages(updatedImages);
+                            } else if (allImages.length > 0) {
+                                const updatedImages = [...allImages];
+                                updatedImages[currentImageIndex] = { ...currentImage, rating: newRating };
+                                setAllImages(updatedImages);
+                            }
+                        }
+                    } else {
+                        console.error('Failed to rate image:', response.statusText);
+                    }
+                } catch (error) {
+                    console.error('Error rating image:', error);
+                }
+            }, [modalImages, allImages, currentImageIndex, showModal, fetchFolders]);
+
+            const handleModalMouseEnter = () => {
+                setShowModalInfo(true);
+                setShowThumbnailStrip(true);
+                // Restart auto-hide timer when mouse enters
+                setTimeout(() => {
+                    setShowModalInfo(false);
+                    setShowThumbnailStrip(false);
+                }, 2000);
+            };
+
+            const handleModalMouseLeave = () => {
+                setShowModalInfo(false);
+                setShowThumbnailStrip(false);
+            };
+
+            return (
+                <div className="container">
+                    <header>
+                        <h1>Folder Ratings</h1>
+                        <a href="/" className="nav-link">Back to Photo Sorter</a>
+                    </header>
+
+                    <div className="breadcrumb">
+                        <span 
+                            className={folderPath.length === 0 ? "breadcrumb-current" : "breadcrumb-item"}
+                            onClick={() => handleBreadcrumbClick(-1)}
+                        >
+                            Root
+                        </span>
+                        {folderPath.map((part, index) => (
+                            <React.Fragment key={index}>
+                                <span className="breadcrumb-separator">/</span>
+                                <span 
+                                    className={index === folderPath.length - 1 ? "breadcrumb-current" : "breadcrumb-item"}
+                                    onClick={() => handleBreadcrumbClick(index)}
+                                >
+                                    {part}
+                                </span>
+                            </React.Fragment>
+                        ))}
+                    </div>
+
+                    <div className="legend">
+                        <div className="legend-item">
+                            <div className="legend-color rank5"></div>
+                            <span>Rating 5</span>
+                        </div>
+                        <div className="legend-item">
+                            <div className="legend-color rank4"></div>
+                            <span>Rating 4</span>
+                        </div>
+                        <div className="legend-item">
+                            <div className="legend-color rank3"></div>
+                            <span>Rating 3</span>
+                        </div>
+                        <div className="legend-item">
+                            <div className="legend-color rank2"></div>
+                            <span>Rating 2</span>
+                        </div>
+                        <div className="legend-item">
+                            <div className="legend-color rank1"></div>
+                            <span>Rating 1</span>
+                        </div>
+                    </div>
+
+                    {loading && (
+                        <div className="loading">
+                            <div className="spinner"></div>
+                            <div>Loading folders...</div>
+                        </div>
+                    )}
+
+                    {error && (
+                        <div className="error">
+                            <div>Error: {error}</div>
+                            <button onClick={fetchFolders} style={{marginTop: '10px', padding: '8px 16px', cursor: 'pointer'}}>
+                                Retry
+                            </button>
+                        </div>
+                    )}
+
+                    {!loading && !error && folders.length === 0 && (
+                        <div>
+                            {folderPath.length > 0 && allImages.length > 0 ? (
+                                <div>
+                                    <div className="stats">
+                                        <span>{allImages.length} images</span>
+                                        <span>Click any image to view full size</span>
+                                    </div>
+                                    <div className="image-grid">
+                                        {allImages.map((image, index) => (
+                                            <div 
+                                                key={index}
+                                                className="image-grid-item"
+                                                onClick={() => openModal(index)}
+                                            >
+                                                <img 
+                                                    src={image.url}
+                                                    alt={image.filename}
+                                                    className="image-grid-thumbnail"
+                                                />
+                                                <div className="image-grid-rating">★ {image.rating}</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            ) : (
+                                <div className="empty-state">
+                                    <div className="empty-state-icon">📁</div>
+                                    <div>No subfolders found</div>
+                                    {folderPath.length > 0 && (
+                                        <div style={{marginTop: '10px', color: '#888'}}>
+                                            This folder contains only images, no subfolders
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {!loading && !error && folders.length > 0 && (
+                        <>
+                            <div className="stats">
+                                <span>{folders.length} folders</span>
+                                <span>Query time: {queryTime}ms</span>
+                            </div>
+                            <div className="folder-list">
+                                {folders.map((folder, index) => {
+                                    const widths = calculateBarWidths(folder);
+                                    const images = folderImages[folder.folder] || [];
+                                    const displayName = getFolderDisplayName(folder.folder);
+                                    
+                                    return (
+                                        <div 
+                                            key={folder.folder} 
+                                            className="folder-row"
+                                            onClick={() => handleFolderClick(folder)}
+                                        >
+                                            <div className="folder-header">
+                                                <span className="folder-icon">📁</span>
+                                                <span className="folder-name">{displayName}</span>
+                                                <div className="folder-stats">
+                                                    <span className="folder-rating">★ {folder.avgRating}</span>
+                                                    <span>{folder.total} photos</span>
+                                                </div>
+                                            </div>
+                                            <div className="bar-container">
+                                                {widths.rank5 > 0 && (
+                                                    <div 
+                                                        className="bar-segment rank5" 
+                                                        style={{width: `${widths.rank5}%`}}
+                                                    >
+                                                        <span className="bar-label">
+                                                            {widths.rank5 > 8 ? folder.rank5 : ''}
+                                                        </span>
+                                                    </div>
+                                                )}
+                                                {widths.rank4 > 0 && (
+                                                    <div 
+                                                        className="bar-segment rank4" 
+                                                        style={{width: `${widths.rank4}%`}}
+                                                    >
+                                                        <span className="bar-label">
+                                                            {widths.rank4 > 8 ? folder.rank4 : ''}
+                                                        </span>
+                                                    </div>
+                                                )}
+                                                {widths.rank3 > 0 && (
+                                                    <div 
+                                                        className="bar-segment rank3" 
+                                                        style={{width: `${widths.rank3}%`}}
+                                                    >
+                                                        <span className="bar-label">
+                                                            {widths.rank3 > 8 ? folder.rank3 : ''}
+                                                        </span>
+                                                    </div>
+                                                )}
+                                                {widths.rank2 > 0 && (
+                                                    <div 
+                                                        className="bar-segment rank2" 
+                                                        style={{width: `${widths.rank2}%`}}
+                                                    >
+                                                        <span className="bar-label">
+                                                            {widths.rank2 > 8 ? folder.rank2 : ''}
+                                                        </span>
+                                                    </div>
+                                                )}
+                                                {widths.rank1 > 0 && (
+                                                    <div 
+                                                        className="bar-segment rank1" 
+                                                        style={{width: `${widths.rank1}%`}}
+                                                    >
+                                                        <span className="bar-label">
+                                                            {widths.rank1 > 8 ? folder.rank1 : ''}
+                                                        </span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                            {images.length > 0 && (
+                                                <div 
+                                                    className="thumbnails" 
+                                                    onClick={(e) => e.stopPropagation()}
+                                                >
+                                                    {images.map((img, imgIndex) => (
+                                                        <img 
+                                                            key={imgIndex}
+                                                            src={img.url}
+                                                            alt={img.filename}
+                                                            className={`thumbnail rating-${img.rating}`}
+                                                            loading="lazy"
+                                                            title={`${img.filename} (Rating: ${img.rating})`}
+                                                            onClick={() => openFolderModal(folder.folder, imgIndex)}
+                                                            style={{cursor: 'pointer'}}
+                                                        />
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </>
+                    )}
+                    
+                    {/* Modal for image viewing */}
+                    {showModal && (modalImages.length > 0 || allImages.length > 0) && (() => {
+                        const images = modalImages.length > 0 ? modalImages : allImages;
+                        const currentImage = images[currentImageIndex];
+                        
+                        return (
+                            <div id="image-modal" className="modal active" onClick={closeModal}>
+                                <span className="modal-close" onClick={closeModal}>&times;</span>
+                                <span className="modal-nav modal-prev" onClick={(e) => { e.stopPropagation(); navigateImage('prev'); }}>&#8249;</span>
+                                <span className="modal-nav modal-next" onClick={(e) => { e.stopPropagation(); navigateImage('next'); }}>&#8250;</span>
+                                <div className="modal-content" onClick={(e) => e.stopPropagation()} onMouseEnter={handleModalMouseEnter} onMouseLeave={handleModalMouseLeave}>
+                                    <img 
+                                        className="modal-image" 
+                                        src={originalImageUrl || currentImage?.originalUrl || currentImage?.url} 
+                                        alt={currentImage?.filename}
+                                    />
+                                    <div className={`modal-info ${!showModalInfo ? 'hidden' : ''}`}>
+                                        <div>{currentImage?.filename}</div>
+                                        <div>Rating: ★ {currentImage?.rating}</div>
+                                        <div>Image {currentImageIndex + 1} of {images.length}</div>
+                                    </div>
+                                    <div className={`modal-thumbnails ${!showThumbnailStrip ? 'hidden' : ''}`}>
+                                        {images.map((image, index) => (
+                                            <img
+                                                key={index}
+                                                src={image.url}
+                                                alt={image.filename}
+                                                className={`modal-thumbnail ${index === currentImageIndex ? 'active' : ''}`}
+                                                onClick={() => setCurrentImageIndex(index)}
+                                                title={`${image.filename} (Rating: ${image.rating})`}
+                                            />
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })()}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<FolderRatings />);
+    </script>
+</body>
+</html>
