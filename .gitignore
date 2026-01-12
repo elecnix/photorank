@@ -91,6 +91,9 @@ Thumbs.db
 
 photos/
 photos.db
+photos.db-shm
+photos.db-wal
 
 # Thumbnail cache
 thumbnail-cache/
+.CHANGES

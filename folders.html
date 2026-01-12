@@ -444,6 +444,7 @@
             const [modalImages, setModalImages] = useState([]);
             const [modalFolder, setModalFolder] = useState('');
             const [showThumbnailStrip, setShowThumbnailStrip] = useState(true);
+            const [thumbnailHover, setThumbnailHover] = useState(false);
 
             // Use ref to track modal state for keyboard handler
             const modalStateRef = useRef({
@@ -618,10 +619,12 @@
                     }
                 }
                 
-                // Hide modal info and thumbnail strip after 2 seconds
+                // Hide modal info after 2 seconds, but keep thumbnail strip if mouse is over it
                 setTimeout(() => {
                     setShowModalInfo(false);
-                    setShowThumbnailStrip(false);
+                    if (!thumbnailHover) {
+                        setShowThumbnailStrip(false);
+                    }
                 }, 2000);
             };
 
@@ -654,10 +657,12 @@
                             // Set original image URL directly
                             setOriginalImageUrl(data.images[imageIndex].originalUrl);
                             
-                            // Hide modal info and thumbnail strip after 2 seconds
+                            // Hide modal info after 2 seconds, but keep thumbnail strip if mouse is over it
                             setTimeout(() => {
                                 setShowModalInfo(false);
-                                setShowThumbnailStrip(false);
+                                if (!thumbnailHover) {
+                                    setShowThumbnailStrip(false);
+                                }
                             }, 2000);
                         }
                     }
@@ -767,7 +772,7 @@
 
                 document.addEventListener('keydown', handleKeyDown);
                 return () => document.removeEventListener('keydown', handleKeyDown);
-            }, [showModal, folderPath, navigateImage, closeModal, rateCurrentImage]);
+            }, [showModal, folderPath, navigateImage]);
 
             // Fetch original image when current image index changes
             useEffect(() => {
@@ -853,11 +858,28 @@
             const handleModalMouseEnter = () => {
                 setShowModalInfo(true);
                 setShowThumbnailStrip(true);
-                // Restart auto-hide timer when mouse enters
+                // Restart auto-hide timer when mouse enters modal content (but not thumbnail strip)
                 setTimeout(() => {
                     setShowModalInfo(false);
-                    setShowThumbnailStrip(false);
+                    if (!thumbnailHover) {
+                        setShowThumbnailStrip(false);
+                    }
                 }, 2000);
+            };
+
+            const handleThumbnailMouseEnter = () => {
+                setThumbnailHover(true);
+                setShowThumbnailStrip(true);
+            };
+
+            const handleThumbnailMouseLeave = () => {
+                setThumbnailHover(false);
+                // Hide thumbnail strip after a short delay if not in modal content
+                setTimeout(() => {
+                    if (!thumbnailHover) {
+                        setShowThumbnailStrip(false);
+                    }
+                }, 500);
             };
 
             const handleModalMouseLeave = () => {
@@ -1087,22 +1109,30 @@
                                 <div className="modal-content" onClick={(e) => e.stopPropagation()} onMouseEnter={handleModalMouseEnter} onMouseLeave={handleModalMouseLeave}>
                                     <img 
                                         className="modal-image" 
-                                        src={originalImageUrl || currentImage?.originalUrl || currentImage?.url} 
-                                        alt={currentImage?.filename}
+                                        src={originalImageUrl || images[currentImageIndex]?.originalUrl || images[currentImageIndex]?.url} 
+                                        alt={images[currentImageIndex]?.filename}
                                     />
                                     <div className={`modal-info ${!showModalInfo ? 'hidden' : ''}`}>
-                                        <div>{currentImage?.filename}</div>
-                                        <div>Rating: ★ {currentImage?.rating}</div>
+                                        <div>{images[currentImageIndex]?.filename}</div>
+                                        <div>Rating: ★ {images[currentImageIndex]?.rating}</div>
                                         <div>Image {currentImageIndex + 1} of {images.length}</div>
                                     </div>
-                                    <div className={`modal-thumbnails ${!showThumbnailStrip ? 'hidden' : ''}`}>
+                                    <div className={`modal-thumbnails ${!showThumbnailStrip ? 'hidden' : ''}`}
+                                         onMouseEnter={handleThumbnailMouseEnter}
+                                         onMouseLeave={handleThumbnailMouseLeave}>
                                         {images.map((image, index) => (
                                             <img
                                                 key={index}
                                                 src={image.url}
                                                 alt={image.filename}
                                                 className={`modal-thumbnail ${index === currentImageIndex ? 'active' : ''}`}
-                                                onClick={() => setCurrentImageIndex(index)}
+                                                onClick={() => {
+                                                    setCurrentImageIndex(index);
+                                                    // Set original image URL directly if available
+                                                    if (images[index]?.originalUrl) {
+                                                        setOriginalImageUrl(images[index].originalUrl);
+                                                    }
+                                                }}
                                                 title={`${image.filename} (Rating: ${image.rating})`}
                                             />
                                         ))}

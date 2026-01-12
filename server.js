@@ -102,10 +102,32 @@ function queueThumbnailRequest(inputPath, outputPath) {
 
 // Database setup
 const dbPath = path.join(__dirname, 'photos.db');
-const db = new sqlite3.Database(dbPath);
+const db = new sqlite3.Database(dbPath, (err) => {
+    if (err) {
+        console.error('Error opening database:', err);
+    } else {
+        console.log('Connected to SQLite database');
+    }
+});
 
-// Initialize database tables
+// Configure SQLite for better concurrency
 db.serialize(() => {
+    // Enable WAL mode for better concurrent reads
+    db.run('PRAGMA journal_mode = WAL', (err) => {
+        if (err) console.error('Error setting WAL mode:', err);
+    });
+    
+    // Increase cache size
+    db.run('PRAGMA cache_size = 10000', (err) => {
+        if (err) console.error('Error setting cache size:', err);
+    });
+    
+    // Reduce synchronous mode for better performance
+    db.run('PRAGMA synchronous = NORMAL', (err) => {
+        if (err) console.error('Error setting synchronous mode:', err);
+    });
+    
+    // Initialize database tables
     db.run(`CREATE TABLE IF NOT EXISTS photos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         path TEXT NOT NULL,
@@ -129,13 +151,13 @@ console.log('Using photo directories:', {
     sorted: sortedDirs
 });
 
-// Flag to prevent concurrent cache refreshes
-let isRefreshingCache = false;
-let currentRefreshPromise = null;
-
 // Flag to track if initial background refresh is running
 let isInitialBackgroundRefresh = false;
 let backgroundRefreshPromise = null;
+
+// Flag to prevent concurrent cache refreshes
+let isRefreshingCache = false;
+let currentRefreshPromise = null;
 
 // Function to refresh the photo cache
 async function refreshPhotoCache() {
@@ -255,16 +277,19 @@ async function refreshPhotoCache() {
             
             // Add new photos
             if (photosToAdd.length > 0) {
-                const chunkSize = 2000;
+                const chunkSize = 100; // Reduced from 2000 to prevent blocking
                 for (let i = 0; i < photosToAdd.length; i += chunkSize) {
                     const chunk = photosToAdd.slice(i, i + chunkSize);
-                    const addPromises = chunk.map(photo =>
-                        new Promise((resolve, reject) => {
-                            if (!photo.path || photo.path.trim() === '') {
-                                console.warn('Skipping photo with empty path:', photo);
-                                resolve();
-                                return;
-                            }
+                    console.log(`Adding chunk ${Math.floor(i/chunkSize) + 1}/${Math.ceil(photosToAdd.length/chunkSize)} (${chunk.length} photos)`);
+                    
+                    // Process sequentially to avoid database blocking
+                    for (const photo of chunk) {
+                        if (!photo.path || photo.path.trim() === '') {
+                            console.warn('Skipping photo with empty path:', photo);
+                            continue;
+                        }
+                        
+                        await new Promise((resolve, reject) => {
                             db.run(
                                 'INSERT OR IGNORE INTO photos (path, location) VALUES (?, ?)',
                                 [photo.path, photo.location],
@@ -273,27 +298,38 @@ async function refreshPhotoCache() {
                                     else resolve();
                                 }
                             );
-                        })
-                    );
-                    await Promise.all(addPromises);
+                        });
+                    }
+                    
+                    // Small delay between chunks to allow other operations
+                    if (i + chunkSize < photosToAdd.length) {
+                        await new Promise(resolve => setTimeout(resolve, 10));
+                    }
                 }
                 console.log(`Added ${photosToAdd.length} new photos to database`);
             }
             
             // Remove stale photos
             if (photosToRemove.length > 0) {
-                const chunkSize = 1000;
+                const chunkSize = 50; // Reduced from 1000 to prevent blocking
                 for (let i = 0; i < photosToRemove.length; i += chunkSize) {
                     const chunk = photosToRemove.slice(i, i + chunkSize);
-                    const removePromises = chunk.map(photo =>
-                        new Promise((resolve, reject) => {
+                    console.log(`Removing chunk ${Math.floor(i/chunkSize) + 1}/${Math.ceil(photosToRemove.length/chunkSize)} (${chunk.length} photos)`);
+                    
+                    // Process sequentially to avoid database blocking
+                    for (const photo of chunk) {
+                        await new Promise((resolve, reject) => {
                             db.run('DELETE FROM photos WHERE path = ? AND location = ?', [photo.path, photo.location], (err) => {
                                 if (err) reject(err);
                                 else resolve();
                             });
-                        })
-                    );
-                    await Promise.all(removePromises);
+                        });
+                    }
+                    
+                    // Small delay between chunks to allow other operations
+                    if (i + chunkSize < photosToRemove.length) {
+                        await new Promise(resolve => setTimeout(resolve, 10));
+                    }
                 }
                 console.log(`Removed ${photosToRemove.length} stale photos from database`);
             }
@@ -307,7 +343,7 @@ async function refreshPhotoCache() {
             });
             
             // Calculate and print folder ranks after cache update
-            calculateAndPrintFolderRanks();
+            // calculateAndPrintFolderRanks(); // Disabled for faster startup
         } catch (error) {
             console.error('Error in refreshPhotoCache:', error);
             // Don't rethrow - just log the error to prevent server crash
@@ -587,17 +623,21 @@ async function printMassActions() {
         // Mark that initial background refresh is starting
         isInitialBackgroundRefresh = true;
 
-        // Create a promise for the background refresh
-        backgroundRefreshPromise = refreshPhotoCache().then(() => {
-            console.log('Initial cache refresh completed');
-            isInitialBackgroundRefresh = false;
-            return printMassActions();
-        }).then(() => {
-            console.log('Mass actions calculated');
-        }).catch((error) => {
-            console.error('Error during background cache refresh:', error);
-            isInitialBackgroundRefresh = false;
-            // Don't throw the error - just log it to prevent server crash
+        // Start the background refresh without blocking
+        // Use setImmediate to make it truly non-blocking
+        setImmediate(() => {
+            refreshPhotoCache().then(() => {
+                console.log('Initial cache refresh completed');
+                isInitialBackgroundRefresh = false;
+                // return printMassActions(); // Disabled for faster startup
+                return Promise.resolve();
+            }).then(() => {
+                // console.log('Mass actions calculated'); // Disabled for faster startup
+            }).catch((error) => {
+                console.error('Error during background cache refresh:', error);
+                isInitialBackgroundRefresh = false;
+                // Don't throw the error - just log it to prevent server crash
+            });
         });
     });
 })();
@@ -699,7 +739,7 @@ function getRandomPhoto() {
     // Function to wait for at least one photo to be indexed into the database
     function waitForFirstPhoto() {
         return new Promise((resolve, reject) => {
-            const maxWaitTime = 10000; // 10 seconds max wait
+            const maxWaitTime = 3000; // Reduced to 3 seconds max wait
             const checkInterval = 100; // Check every 100ms
             let elapsedTime = 0;
             
@@ -719,7 +759,8 @@ function getRandomPhoto() {
                     
                     elapsedTime += checkInterval;
                     if (elapsedTime >= maxWaitTime) {
-                        reject(new Error('Timeout waiting for first photo to be indexed'));
+                        console.log('Timeout waiting for first photo - proceeding without photos');
+                        resolve(); // Resolve even if no photos, to prevent blocking
                         return;
                     }
                     
@@ -801,10 +842,10 @@ function getRandomPhoto() {
             });
         });
         
-        // If database is completely empty, wait for any photo to be indexed
+        // If database is completely empty, trigger a refresh but don't block for too long
         if (totalPhotos === 0) {
             if (isInitialBackgroundRefresh && backgroundRefreshPromise) {
-                console.log('Database is empty, waiting for first photo to be indexed...');
+                console.log('Database is empty, waiting briefly for first photo to be indexed...');
                 const startWait = Date.now();
                 try {
                     // Wait for at least one photo to appear in database
@@ -819,7 +860,7 @@ function getRandomPhoto() {
                     return resolve({ photo: retryResult.photo, directory: retryResult.directory });
                 }
             } else if (isRefreshingCache && currentRefreshPromise) {
-                console.log('Database is empty, waiting for first photo to be indexed from ongoing refresh...');
+                console.log('Database is empty, waiting briefly for first photo to be indexed from ongoing refresh...');
                 const startWait = Date.now();
                 try {
                     // Wait for at least one photo to appear in database
@@ -834,20 +875,11 @@ function getRandomPhoto() {
                     return resolve({ photo: retryResult.photo, directory: retryResult.directory });
                 }
             } else {
-                // No refresh running and database is empty, trigger our own refresh
-                console.log('Database is empty, starting refresh and waiting for first photo...');
-                const startWait = Date.now();
-                refreshPhotoCache(); // Start refresh in background
+                // No refresh running and database is empty, trigger our own refresh but don't wait
+                console.log('Database is empty, starting refresh in background...');
+                refreshPhotoCache(); // Start refresh in background without waiting
                 
-                try {
-                    // Wait for at least one photo to appear in database
-                    await waitForFirstPhoto();
-                } catch (error) {
-                    console.error('Waiting for first photo failed:', error);
-                }
-                console.log(`Waited ${Date.now() - startWait}ms for first photo during new refresh`);
-                
-                // Try again now that at least one photo should be available
+                // Try once more quickly in case refresh is very fast
                 const retryResult = await tryGetPhotoFromLocation('base');
                 if (retryResult) {
                     return resolve({ photo: retryResult.photo, directory: retryResult.directory });
